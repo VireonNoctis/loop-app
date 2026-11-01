@@ -1,0 +1,57 @@
+name: Chains redevelopment verification
+
+on:
+  push:
+    branches:
+      - redevelopment/circle-core-experience
+  pull_request:
+    branches:
+      - redesign/experience-platform-foundation
+
+concurrency:
+  group: chains-redevelopment-\${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  frontend:
+    name: Frontend type checks, tests and production build
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci --legacy-peer-deps
+      - name: TypeScript and unit tests
+        run: npm run verify
+      - name: Production build
+        run: npm run build
+        env:
+          DATABASE_URL: postgresql://loop:ci-only@127.0.0.1:5432/loop
+          BETTER_AUTH_SECRET: loop-ci-build-only-secret-do-not-use-at-runtime-123456
+          NEXT_PUBLIC_SUPABASE_URL: https://placeholder.supabase.co
+          NEXT_PUBLIC_SUPABASE_ANON_KEY: placeholder
+          SUPABASE_SERVICE_ROLE_KEY: placeholder
+
+  rust-api:
+    name: Rust API formatting, compile, tests and Clippy
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+      - name: Check compilation
+        run: cargo check
+      - name: Run tests
+        run: cargo test
+      - name: Run Clippy
+        run: cargo clippy --all-targets --all-features -- -D warnings
