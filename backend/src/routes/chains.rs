@@ -258,11 +258,17 @@ pub async fn list(
               chain.visibility = 'public'
               AND (
                 chain.circle_id IS NULL
-                OR ($1::uuid IS NOT NULL AND EXISTS (
-                    SELECT 1 FROM circle_members AS circle_member
-                    WHERE circle_member.circle_id = chain.circle_id
-                      AND circle_member.user_id = $1
-                      AND circle_member.status IN ('active', 'approved')
+                OR ($1::uuid IS NOT NULL AND (
+                    EXISTS (
+                        SELECT 1 FROM circles AS circle
+                        WHERE circle.id = chain.circle_id AND circle.owner_id = $1
+                    )
+                    OR EXISTS (
+                        SELECT 1 FROM circle_members AS circle_member
+                        WHERE circle_member.circle_id = chain.circle_id
+                          AND circle_member.user_id = $1
+                          AND circle_member.status IN ('active', 'approved')
+                    )
                 ))
               )
             )
@@ -445,11 +451,17 @@ pub async fn get(
               chain.visibility IN ('public', 'unlisted')
               AND (
                 chain.circle_id IS NULL
-                OR ($2::uuid IS NOT NULL AND EXISTS (
-                    SELECT 1 FROM circle_members AS member
-                    WHERE member.circle_id = chain.circle_id
-                      AND member.user_id = $2
-                      AND member.status IN ('active', 'approved')
+                OR ($2::uuid IS NOT NULL AND (
+                    EXISTS (
+                        SELECT 1 FROM circles AS circle
+                        WHERE circle.id = chain.circle_id AND circle.owner_id = $2
+                    )
+                    OR EXISTS (
+                        SELECT 1 FROM circle_members AS member
+                        WHERE member.circle_id = chain.circle_id
+                          AND member.user_id = $2
+                          AND member.status IN ('active', 'approved')
+                    )
                 ))
               )
             )
@@ -485,20 +497,33 @@ pub async fn get(
                 )
                 OR (
                     chain.contribution_policy = 'open'
-                    AND (chain.circle_id IS NULL OR EXISTS (
-                        SELECT 1 FROM circle_members AS member
-                        WHERE member.circle_id = chain.circle_id
-                          AND member.user_id = $2
-                          AND member.status IN ('active', 'approved')
-                    ))
+                    AND (
+                        chain.circle_id IS NULL
+                        OR EXISTS (
+                            SELECT 1 FROM circles AS circle
+                            WHERE circle.id = chain.circle_id AND circle.owner_id = $2
+                        )
+                        OR EXISTS (
+                            SELECT 1 FROM circle_members AS member
+                            WHERE member.circle_id = chain.circle_id
+                              AND member.user_id = $2
+                              AND member.status IN ('active', 'approved')
+                        )
+                    )
                 )
                 OR (
                     chain.contribution_policy = 'circle_members'
-                    AND EXISTS (
-                        SELECT 1 FROM circle_members AS member
-                        WHERE member.circle_id = chain.circle_id
-                          AND member.user_id = $2
-                          AND member.status IN ('active', 'approved')
+                    AND (
+                        EXISTS (
+                            SELECT 1 FROM circles AS circle
+                            WHERE circle.id = chain.circle_id AND circle.owner_id = $2
+                        )
+                        OR EXISTS (
+                            SELECT 1 FROM circle_members AS member
+                            WHERE member.circle_id = chain.circle_id
+                              AND member.user_id = $2
+                              AND member.status IN ('active', 'approved')
+                        )
                     )
                 )
             FROM chains AS chain

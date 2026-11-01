@@ -160,3 +160,15 @@ Measure successful contributions, returning contributors, Chain completion/remix
 ## 7. Scope discipline
 
 Build progressively. Do not duplicate existing systems, rename Branch trees into Chains, rewrite working application areas without need, introduce speculative abstractions, or claim a migration/integration is complete before it is deployed and tested. Keep each slice independently reviewable and preserve working routes.
+
+
+## 8. Current implementation snapshot
+
+The first Chains vertical slice is in development on \`redevelopment/circle-core-experience\`:
+- Additive PostgreSQL tables for Chains, contributors and typed contributions.
+- Rust API endpoints for discovery/listing, creation, public/private/Circle-scoped detail access and contribution writes.
+- Initial web discovery and detail experiences, including public Chain creation and optional creation inside a Circle.
+- Circle membership is checked server-side for Circle-scoped access and contribution.
+- Existing Loop Branch trees remain separate and unchanged.
+
+This is an initial vertical slice, not the completed Chains system. Editing/revisions, invitations, moderation queues, reactions/discussions, rich media upload, forking/remixing, templates, exports, and pagination beyond the first 100 detail contributions remain follow-on work. CI and deployment verification are required before calling the slice complete.
