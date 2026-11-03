@@ -45,11 +45,12 @@ ALTER TABLE public.open_co_loop_participants ENABLE ROW LEVEL SECURITY;
 
 DO $$
 BEGIN
+    -- The participant roster is queried only by authenticated server routes.
+    -- Do not expose member ids through the public Supabase REST surface.
     DROP POLICY IF EXISTS "Anyone can read open co-loop participants" ON public.open_co_loop_participants;
-    CREATE POLICY "Anyone can read open co-loop participants" ON public.open_co_loop_participants FOR SELECT USING (true);
-
     DROP POLICY IF EXISTS "Service role manages open co-loop participants" ON public.open_co_loop_participants;
-    CREATE POLICY "Service role manages open co-loop participants" ON public.open_co_loop_participants FOR ALL USING (true) WITH CHECK (true);
+    CREATE POLICY "Service role manages open co-loop participants" ON public.open_co_loop_participants
+        FOR ALL TO service_role USING (true) WITH CHECK (true);
 END $$;
 
 -- 4. Enable realtime

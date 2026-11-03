@@ -17,6 +17,12 @@ import {
   MoreHorizontal,
 } from "lucide-react"
 import { Button } from "@/components/ui/button"
+import { AnimatedIconView } from "@/components/icons/animated/animated-icon-view"
+import HeartIcon from "@/components/icons/animated/heart-icon"
+import MessageCircleIcon from "@/components/icons/animated/message-circle-icon"
+import BookmarkIcon from "@/components/icons/animated/bookmark-icon"
+import { AddLoopToCollectionItem } from "@/components/collections/add-loop-to-collection-item"
+import SendHorizontalIcon from "@/components/icons/animated/send-horizontal-icon"
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -141,7 +147,7 @@ export function LoopCardActions({
           {activeInteracting === `${loop.id}-like` ? (
             <Spinner className="h-[18px] w-[18px]" />
           ) : (
-            <Heart className={`h-[18px] w-[18px] transition-transform ${isLiked ? "fill-current scale-105" : ""}`} />
+            <AnimatedIconView component={HeartIcon} size={18} className={isLiked ? "scale-105" : ""} />
           )}
           <Count value={likesCount} />
         </Button>
@@ -155,7 +161,7 @@ export function LoopCardActions({
             {loop.comments_disabled ? (
               <Lock className="h-[18px] w-[18px] text-amber-500" />
             ) : (
-              <MessageCircle className="h-[18px] w-[18px]" />
+              <AnimatedIconView component={MessageCircleIcon} size={18} />
             )}
             <Count value={commentsCount} />
           </Button>
@@ -194,7 +200,7 @@ export function LoopCardActions({
               title="Share options"
               aria-label="Share this loop"
             >
-              <Share className="h-[18px] w-[18px]" />
+              <AnimatedIconView component={SendHorizontalIcon} size={18} />
               <Count value={sharesCount} />
             </Button>
           </DropdownMenuTrigger>
@@ -273,9 +279,11 @@ export function LoopCardActions({
             disabled={activeInteracting === `${loop.id}-save`}
             className="cursor-pointer gap-2 py-2 text-xs"
           >
-            <Bookmark className={`h-4 w-4 text-sky-500 ${isSaved ? "fill-current" : ""}`} />
+            <AnimatedIconView component={BookmarkIcon} size={16} color={isSaved ? "hsl(var(--primary))" : "currentColor"} />
             <span>{isSaved ? "Remove bookmark" : "Bookmark"}</span>
           </DropdownMenuItem>
+
+          <AddLoopToCollectionItem loopId={loop.id} />
 
           <DropdownMenuItem onClick={onBoost} className="cursor-pointer gap-2 py-2 text-xs">
             <Rocket className="h-4 w-4 text-[var(--theme-primary)]" />

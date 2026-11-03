@@ -44,17 +44,23 @@ export async function generateMetadata({ params }: CommunityPageProps): Promise<
         .eq("status", "active"),
     ])
 
-    if (circle) {
-      title = `${circle.name} — Community on Loop`
+    if (circle?.is_private) {
+      // Metadata is fetched without a viewer session, so never expose private
+      // Circle identity, artwork, description or member count in link previews.
+      title = "Private Circle — Loop"
+      description = "This Circle is private. Sign in and request access to view it."
+      isPrivate = true
+      memberCount = 0
+    } else if (circle) {
+      title = `${circle.name} — Circle on Loop`
       if (circle.description) description = circle.description.slice(0, 160)
       avatarUrl = circle.avatar_url || ""
       communityName = circle.name || ""
       bannerUrl = (circle as any).banner_url || ""
       category = circle.category || ""
-      isPrivate = Boolean(circle.is_private)
       isVerified = Boolean(circle.is_verified)
+      memberCount = count || 0
     }
-    memberCount = count || 0
   } catch (err) {
     console.error("Error generating community metadata:", err)
   }

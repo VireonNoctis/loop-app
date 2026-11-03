@@ -6,6 +6,7 @@ import { getAbsoluteAppUrl } from "@/lib/app-url"
 import { stripCircleBioTokens } from "@/lib/circle-bio-tokens"
 import { profileStatus } from "@/lib/user-status"
 import { buildOgMetadata } from "@/lib/og/metadata"
+import { isRestrictedProfileVisibility } from "@/lib/profile-privacy"
 
 export const dynamic = "force-dynamic"
 
@@ -28,11 +29,12 @@ export async function generateMetadata({ params }: ProfilePageProps): Promise<Me
   let isVerified = false
   let followersCount = 0
   let displayName = ""
+  let restrictedProfile = false
 
   try {
     const { data: profile } = await supabase
       .from("profiles")
-      .select("display_name, bio, avatar_url, is_verified, followers_count, is_deleted, deletion_executed_at, is_banned")
+      .select("display_name, bio, avatar_url, is_verified, followers_count, privacy_settings, is_deleted, deletion_executed_at, is_banned")
       .eq("username", username)
       .single()
 
@@ -48,19 +50,27 @@ export async function generateMetadata({ params }: ProfilePageProps): Promise<Me
     }
 
     if (profile) {
+      const restricted = isRestrictedProfileVisibility(profile.privacy_settings)
+      restrictedProfile = restricted
       const name = profile.display_name || username
-      displayName = name
-      title = `${name} (@${username}) — Profile`
-      if (profile.bio) description = stripCircleBioTokens(profile.bio).slice(0, 160)
-      avatarUrl = profile.avatar_url || ""
-      isVerified = Boolean(profile.is_verified)
-      followersCount = Number(profile.followers_count || 0)
+      displayName = restricted ? username : name
+      title = restricted ? "@" + username + " on Loop" : name + " (@" + username + ") — Profile"
+      description = restricted
+        ? "A private profile on Loop."
+        : profile.bio
+          ? stripCircleBioTokens(profile.bio).slice(0, 160)
+          : description
+      // Private/follower-only profiles should not leak their avatar, bio or
+      // follower totals through Open Graph or crawler metadata.
+      avatarUrl = restricted ? "" : profile.avatar_url || ""
+      isVerified = restricted ? false : Boolean(profile.is_verified)
+      followersCount = restricted ? 0 : Number(profile.followers_count || 0)
     }
   } catch (err) {
     console.error("Error generating profile metadata:", err)
   }
 
-  return buildOgMetadata({
+  const metadata = buildOgMetadata({
     baseUrl,
     path: `/profile/${username}`,
     type: "profile",
@@ -77,6 +87,10 @@ export async function generateMetadata({ params }: ProfilePageProps): Promise<Me
       url: `loopapp.me/profile/${username}`,
     },
   })
+
+  return restrictedProfile
+    ? { ...metadata, robots: { index: false, follow: false } }
+    : metadata
 }
 
 export default async function ProfilePage({ params }: ProfilePageProps) {
@@ -88,19 +102,22 @@ export default async function ProfilePage({ params }: ProfilePageProps) {
   let bio = ""
   let avatarUrl = ""
   let followersCount = 0
+  let includeProfileStructuredData = false
 
   try {
     const { data: profile } = await supabase
       .from("profiles")
-      .select("display_name, bio, avatar_url, followers_count")
+      .select("display_name, bio, avatar_url, followers_count, privacy_settings, is_deleted, deletion_executed_at, is_banned")
       .eq("username", username)
       .single()
 
-    if (profile) {
-      displayName = profile.display_name || username
-      bio = profile.bio ? stripCircleBioTokens(profile.bio).slice(0, 160) : ""
-      avatarUrl = profile.avatar_url || ""
-      followersCount = Number(profile.followers_count || 0)
+    if (profile && profileStatus(profile as any) === "active") {
+      const restricted = isRestrictedProfileVisibility(profile.privacy_settings)
+      displayName = restricted ? username : profile.display_name || username
+      bio = !restricted && profile.bio ? stripCircleBioTokens(profile.bio).slice(0, 160) : ""
+      avatarUrl = restricted ? "" : profile.avatar_url || ""
+      followersCount = restricted ? 0 : Number(profile.followers_count || 0)
+      includeProfileStructuredData = !restricted
     }
   } catch (err) {
     console.error("Error loading profile for structured data:", err)
@@ -122,21 +139,25 @@ export default async function ProfilePage({ params }: ProfilePageProps) {
     }
   }
 
-  const profileJsonLd = {
-    "@context": "https://schema.org",
-    "@type": "ProfilePage",
-    mainEntity: person,
-  }
+  const profileJsonLd = includeProfileStructuredData
+    ? {
+        "@context": "https://schema.org",
+        "@type": "ProfilePage",
+        mainEntity: person,
+      }
+    : null
 
   return (
     <div className="min-h-screen bg-background text-foreground transition-colors duration-500">
       <Header />
       <main className="mx-auto w-full max-w-6xl px-0 sm:px-4 sm:py-6">
         {/* Schema.org structured data: ProfilePage + Person */}
-        <script
-          type="application/ld+json"
-          dangerouslySetInnerHTML={{ __html: JSON.stringify(profileJsonLd) }}
-        />
+        {profileJsonLd ? (
+          <script
+            type="application/ld+json"
+            dangerouslySetInnerHTML={{ __html: JSON.stringify(profileJsonLd) }}
+          />
+        ) : null}
         <Enhanced3DProfile username={username} />
       </main>
     </div>

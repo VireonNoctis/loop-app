@@ -43,6 +43,14 @@ import {
 } from "lucide-react"
 import type { LucideIcon } from "lucide-react"
 
+interface CircleOwnershipCandidate {
+  user_id: string
+  user?: {
+    username?: string | null
+    display_name?: string | null
+  } | null
+}
+
 interface Power {
   id: number
   name: string
@@ -98,7 +106,7 @@ export function RolesDialog({
   open: boolean
   onOpenChange: (open: boolean) => void
 }) {
-  const { getAuthHeader } = useAuth()
+  const { getAuthHeader, user } = useAuth()
   const { toast } = useToast()
 
   const [loading, setLoading] = useState(false)
@@ -111,6 +119,11 @@ export function RolesDialog({
   const [editing, setEditing] = useState<Power | null>(null)
   const [busy, setBusy] = useState<number | "new" | null>(null)
   const [confirmDelete, setConfirmDelete] = useState<Power | null>(null)
+  const [canTransferOwnership, setCanTransferOwnership] = useState(false)
+  const [ownershipCandidates, setOwnershipCandidates] = useState<CircleOwnershipCandidate[]>([])
+  const [selectedNewOwner, setSelectedNewOwner] = useState("")
+  const [confirmOwnershipTransfer, setConfirmOwnershipTransfer] = useState(false)
+  const [transferringOwnership, setTransferringOwnership] = useState(false)
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -130,12 +143,44 @@ export function RolesDialog({
           : DEFAULT_THREAD_POLICY
       setPolicy(nextPolicy)
       setPolicyDraft(nextPolicy)
+
+      // Ownership is a separate capability: only the canonical owner sees
+      // the transfer control, and candidates come from the active roster.
+      try {
+        const ownershipResponse = await fetch(`/api/circles/${communityId}/ownership`, {
+          headers: { ...getAuthHeader() },
+          cache: "no-store",
+        })
+        const ownershipJson = await ownershipResponse.json().catch(() => ({}))
+        const ownerCanTransfer = ownershipResponse.ok && ownershipJson.can_transfer === true
+        setCanTransferOwnership(ownerCanTransfer)
+        if (ownerCanTransfer) {
+          const memberResponse = await fetch(`/api/circles/${communityId}/members?limit=100`, {
+            headers: { ...getAuthHeader() },
+            cache: "no-store",
+          })
+          const memberJson = await memberResponse.json().catch(() => ({}))
+          setOwnershipCandidates(
+            memberResponse.ok && Array.isArray(memberJson.members)
+              ? memberJson.members.filter((member: CircleOwnershipCandidate) =>
+                  typeof member.user_id === "string" && member.user_id !== user?.id,
+                )
+              : [],
+          )
+        } else {
+          setOwnershipCandidates([])
+          setSelectedNewOwner("")
+        }
+      } catch {
+        setCanTransferOwnership(false)
+        setOwnershipCandidates([])
+      }
     } catch (e: any) {
       toast({ title: "Could not load roles", description: e.message, variant: "destructive" })
     } finally {
       setLoading(false)
     }
-  }, [communityId, getAuthHeader, toast])
+  }, [communityId, getAuthHeader, toast, user?.id])
 
   useEffect(() => {
     if (open) void load()
@@ -221,6 +266,31 @@ export function RolesDialog({
   }
 
   const policyDirty = JSON.stringify(policy) !== JSON.stringify(policyDraft)
+
+  const transferOwnership = async () => {
+    if (!selectedNewOwner) return
+    setTransferringOwnership(true)
+    try {
+      const response = await fetch(`/api/circles/${communityId}/ownership`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...getAuthHeader() },
+        body: JSON.stringify({ new_owner_id: selectedNewOwner }),
+      })
+      const json = await response.json().catch(() => ({}))
+      if (!response.ok) throw new Error(json.error || "Could not transfer ownership")
+      toast({
+        title: "Circle ownership transferred",
+        description: "The new owner now manages the Circle. Your account remains an admin.",
+      })
+      setConfirmOwnershipTransfer(false)
+      setSelectedNewOwner("")
+      await load()
+    } catch (e: any) {
+      toast({ title: "Could not transfer ownership", description: e.message, variant: "destructive" })
+    } finally {
+      setTransferringOwnership(false)
+    }
+  }
 
   return (
     <>
@@ -362,6 +432,53 @@ export function RolesDialog({
                 )}
               </section>
 
+              {canTransferOwnership && (
+                <section className="rounded-2xl border border-border bg-muted/20 p-4">
+                  <div className="flex items-start gap-3">
+                    <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-primary/10 text-primary">
+                      <Crown className="h-4 w-4" />
+                    </span>
+                    <div className="min-w-0 flex-1">
+                      <h3 className="text-sm font-semibold">Transfer Circle ownership</h3>
+                      <p className="mt-1 text-xs text-muted-foreground">
+                        Choose an active member to become the owner. You will remain an admin after the transfer.
+                      </p>
+                      <div className="mt-3 flex flex-col gap-2 sm:flex-row">
+                        <select
+                          aria-label="New Circle owner"
+                          value={selectedNewOwner}
+                          onChange={(event) => setSelectedNewOwner(event.target.value)}
+                          className="min-h-10 min-w-0 flex-1 rounded-xl border border-border bg-background px-3 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                        >
+                          <option value="">Choose an active member</option>
+                          {ownershipCandidates.map((candidate) => {
+                            const username = candidate.user?.username || candidate.user_id
+                            const label = candidate.user?.display_name || username
+                            return (
+                              <option key={candidate.user_id} value={candidate.user_id}>
+                                {label} (@{username})
+                              </option>
+                            )
+                          })}
+                        </select>
+                        <Button
+                          className="rounded-full"
+                          disabled={!selectedNewOwner || transferringOwnership}
+                          onClick={() => setConfirmOwnershipTransfer(true)}
+                        >
+                          Transfer ownership
+                        </Button>
+                      </div>
+                      {ownershipCandidates.length === 0 && (
+                        <p className="mt-2 text-xs text-muted-foreground">
+                          There are no other active members available to receive ownership.
+                        </p>
+                      )}
+                    </div>
+                  </div>
+                </section>
+              )}
+
               {/* ── Roles ── */}
               <section>
                 <div className="flex items-center justify-between gap-2">
@@ -463,6 +580,35 @@ export function RolesDialog({
               </section>
             </div>
           )}
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={confirmOwnershipTransfer} onOpenChange={setConfirmOwnershipTransfer}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>Transfer Circle ownership?</DialogTitle>
+            <DialogDescription>
+              This is a permanent role change. The selected active member becomes the owner, and your account is retained as an admin. Premium status and verification are unaffected.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="flex justify-end gap-2">
+            <Button
+              variant="ghost"
+              className="rounded-full"
+              disabled={transferringOwnership}
+              onClick={() => setConfirmOwnershipTransfer(false)}
+            >
+              Cancel
+            </Button>
+            <Button
+              className="rounded-full"
+              disabled={transferringOwnership || !selectedNewOwner}
+              onClick={() => void transferOwnership()}
+            >
+              {transferringOwnership ? <Loader2 className="mr-1.5 h-4 w-4 animate-spin" /> : <Crown className="mr-1.5 h-4 w-4" />}
+              Confirm transfer
+            </Button>
+          </div>
         </DialogContent>
       </Dialog>
 

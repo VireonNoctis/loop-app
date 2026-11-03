@@ -15,6 +15,50 @@ import { LogIn, Smartphone, ArrowRight, Download, CheckCircle } from "lucide-rea
 import { useEffect, useState, useCallback } from "react"
 
 export function HomePageClient() {
+  const [hydrated, setHydrated] = useState(false)
+
+  useEffect(() => {
+    setHydrated(true)
+  }, [])
+
+  // Keep the server render and the browser's first render identical. Auth,
+  // persisted theme and feed widgets mount only after hydration has completed.
+  if (!hydrated) {
+    return (
+      <div data-home-hydrated="false" className="min-h-screen bg-background text-foreground">
+        <header className="border-b border-border/70 bg-background/90">
+          <div className="mx-auto flex h-14 max-w-7xl items-center justify-between px-4">
+            <Link href="/" className="text-sm font-bold tracking-tight">loopapp.me</Link>
+            <nav aria-label="Primary" className="flex items-center gap-3 text-sm">
+              <Link href="/explore" className="text-muted-foreground hover:text-foreground">Explore</Link>
+              <Link href="/login" className="text-muted-foreground hover:text-foreground">Log in</Link>
+              <Link href="/signup" className="rounded-full bg-foreground px-3 py-1.5 text-background">Join free</Link>
+            </nav>
+          </div>
+        </header>
+        <main className="mx-auto w-full max-w-6xl px-3 pb-24 pt-6 sm:px-6 sm:pt-10">
+          <section className="overflow-hidden rounded-2xl border border-border/60 bg-card/50 p-5 sm:p-8">
+            <h1 className="max-w-3xl text-3xl font-semibold tracking-tight sm:text-5xl">
+              Build together.
+              <span className="text-muted-foreground"> Not just post into the void.</span>
+            </h1>
+            <p className="mt-3 max-w-2xl text-sm leading-6 text-muted-foreground sm:text-base">
+              Create with other people, discover ideas worth joining, and build communities around shared interests.
+            </p>
+            <div className="mt-5 flex flex-wrap gap-2">
+              <Link href="/signup" className="rounded-full bg-foreground px-4 py-2 text-sm font-semibold text-background">Join free</Link>
+              <Link href="/explore" className="rounded-full border border-border px-4 py-2 text-sm font-medium">Explore Loop</Link>
+            </div>
+          </section>
+        </main>
+      </div>
+    )
+  }
+
+  return <HomePageInteractive />
+}
+
+function HomePageInteractive() {
   const { user } = useAuth()
 
   // Treat unresolved auth as guest so SSR/crawlers get real content + <h1>
@@ -22,7 +66,7 @@ export function HomePageClient() {
   const isGuest = !user
 
   return (
-    <div className="min-h-screen bg-background text-foreground transition-colors duration-300">
+    <div data-home-hydrated="true" className="min-h-screen bg-background text-foreground transition-colors duration-300">
       <Header />
 
       <main className="container mx-auto px-2 pb-24 pt-3 sm:px-4 sm:py-6 lg:pb-6">

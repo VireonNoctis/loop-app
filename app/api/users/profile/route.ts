@@ -7,6 +7,9 @@ import { isProUser } from "@/lib/pro-features"
 import { maskProfile, profileStatus } from "@/lib/user-status"
 import { applyRealCommentCounts, attachParentAuthors } from "@/lib/loop-stats"
 import { checkBlockStatus } from "@/lib/user-blocks"
+import { buildPublicProfileIdentity, buildRestrictedProfileView, isRestrictedProfileVisibility } from "@/lib/profile-privacy"
+import { filterPrivateContent, getFollowingIds } from "@/lib/privacy"
+import { filterCircleScopedContent } from "@/lib/circle-content-privacy"
 
 export async function GET(request: NextRequest) {
   try {
@@ -90,7 +93,7 @@ export async function GET(request: NextRequest) {
     const privacySettings = (profile as any)?.privacy_settings || {}
     // "followers" visibility is gated exactly like "private": only approved
     // followers (and the owner) can see the full profile.
-    const isPrivate = ["private", "followers"].includes(privacySettings.profile_visibility)
+    const isPrivate = isRestrictedProfileVisibility(privacySettings)
 
     const [{ count: followersCount }, { count: followingCount }, { count: loopsCount }, { count: branchesCount }, { count: commentsCount }, { data: rawRecentLoops }, { data: rawCoLoops }, { data: rawRecentBranches }, { data: rawMediaLoops }, { data: followRecord }, { data: pendingFollowRequest }, { data: activeItems }] = await Promise.all([
       supabase.from("follows").select("id", { count: "exact", head: true }).eq("following_id", profile.id),
@@ -191,45 +194,12 @@ export async function GET(request: NextRequest) {
     // Private profile, or a block in either direction — only expose pfp,
     // cover, name and bio (plus block status so the UI can explain why).
     if (!canViewFull) {
-      const limited = {
-        id: profile.id,
-        username: profile.username,
-        display_name: profile.display_name,
-        avatar_url: profile.avatar_url,
-        video_avatar_url: profile.video_avatar_url,
-        banner_url: profile.banner_url,
-        bio: profile.bio,
-        location: profile.location,
-        website: profile.website,
-        is_verified: profile.is_verified,
-        is_premium: profile.is_premium,
-        is_organization: profile.is_organization,
-        organization_name: profile.organization_name,
-        created_at: profile.created_at,
-        is_private: isPrivate,
-        privacy: {
-          profile_visibility: privacySettings.profile_visibility || "public",
-          message_privacy: privacySettings.message_privacy || "everyone",
-        },
-        is_following: false,
-        is_follower: false,
-        is_self: false,
-        has_pending_follow_request: hasPendingRequest,
-        is_blocked: isBlockedView,
-        block_direction: blockDirection,
-        can_view_full: false,
-        followers_count: followersCount ?? 0,
-        following_count: 0,
-        loops_count: 0,
-        branches_count: 0,
-        comments_count: 0,
-        likes_received: 0,
-        recent_loops: [],
-        recent_branches: [],
-        media_loops: [],
-        active_cosmetics: null,
-        active_effects: [],
-      }
+      const limited = buildRestrictedProfileView(profile as any, {
+        isPrivate,
+        hasPendingRequest,
+        isBlocked: isBlockedView,
+        blockDirection,
+      })
       return NextResponse.json({ success: true, profile: limited, private: isPrivate, blocked: isBlockedView })
     }
 
@@ -248,9 +218,29 @@ export async function GET(request: NextRequest) {
       (a: any, b: any) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
     ).slice(0, 30)
 
-    const recentLoops = await enrichLoopsWithPollsAndDuels(supabase, combinedRecentLoops)
-    const recentBranches = await enrichLoopsWithPollsAndDuels(supabase, rawRecentBranches || [])
-    const mediaLoops = await enrichLoopsWithPollsAndDuels(supabase, rawMediaLoops || [])
+    // Profile surfaces follow the same creator/block and Circle access rules
+    // as Discover and Search. A public profile does not make a private Circle's
+    // posts or another blocked co-author's work public.
+    const followingIds = await getFollowingIds(supabase, authedUser?.id || null)
+    const filterProfileSurface = async (rows: any[]) => {
+      const visibleAuthors = await filterPrivateContent(
+        supabase,
+        rows,
+        authedUser?.id || null,
+        followingIds,
+      )
+      return filterCircleScopedContent(supabase, visibleAuthors, authedUser?.id || null)
+    }
+
+    const [visibleRecentLoops, visibleRecentBranches, visibleMediaLoops] = await Promise.all([
+      filterProfileSurface(combinedRecentLoops),
+      filterProfileSurface(rawRecentBranches || []),
+      filterProfileSurface(rawMediaLoops || []),
+    ])
+
+    const recentLoops = await enrichLoopsWithPollsAndDuels(supabase, visibleRecentLoops)
+    const recentBranches = await enrichLoopsWithPollsAndDuels(supabase, visibleRecentBranches)
+    const mediaLoops = await enrichLoopsWithPollsAndDuels(supabase, visibleMediaLoops)
     // Branched posts also carry a parent — fetch the real parent author so
     // branch banners can say "Branch from @username" here too.
     await Promise.all([
@@ -280,7 +270,7 @@ export async function GET(request: NextRequest) {
     const derivedCosmetics = cosmeticsFromInventory(activeItems || [])
 
     const profileWithSocial = {
-      ...profile,
+      ...buildPublicProfileIdentity(profile as Record<string, any>, isSelf),
       followers_count: followersCount ?? profile.followers_count ?? 0,
       following_count: followingCount ?? profile.following_count ?? 0,
       loops_count: loopsCount ?? profile.loops_count ?? 0,
@@ -298,8 +288,6 @@ export async function GET(request: NextRequest) {
         profile.active_cosmetics && Object.keys(profile.active_cosmetics || {}).length
           ? profile.active_cosmetics
           : derivedCosmetics,
-      available_earnings: profile.available_earnings ?? 0,
-      total_earnings: profile.total_earnings ?? 0,
       recent_loops: normalizeLoops(recentLoops || []),
       recent_branches: normalizeLoops(recentBranches || []),
       media_loops: normalizeLoops(mediaLoops || []),
@@ -363,7 +351,8 @@ export async function PUT(request: NextRequest) {
       'bio',
       'location',
       'website',
-      'avatar_url, video_avatar_url',
+      'avatar_url',
+      'video_avatar_url',
       'banner_url',
       'theme_data',
       'privacy_settings',

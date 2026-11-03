@@ -18,7 +18,7 @@ interface ExistingRequest {
   id: string | number;
   verification_type: string;
   status: string;
-  admin_notes?: string | null;
+  rejection_reason?: string | null;
   created_at: string;
 }
 
@@ -38,19 +38,18 @@ const STATUS_META: Record<string, { label: string; cls: string; icon: React.Elem
 export function VerificationRequest() {
   const [formData, setFormData] = useState({
     realName: "",
-    username: "",
     socialLinks: "",
     reason: "",
+    documents: "",
     category: "creator" as VerificationType,
   });
   const [isSubmitting, setIsSubmitting] = useState(false)
-  const [profile, setProfile] = useState<{ is_verified: boolean; avatar_url?: string } | null>(null)
+  const [profile, setProfile] = useState<{ is_verified: boolean } | null>(null)
   const [existingRequests, setExistingRequests] = useState<ExistingRequest[]>([])
   const { toast } = useToast()
   const { user, getAuthHeader } = useAuth()
 
-  // Prefill the username from the signed-in profile and load request history +
-  // verified status so the page reflects reality instead of guessing.
+  // Load the signed-in account's verification state and request history.
   useEffect(() => {
     let mounted = true
     async function load() {
@@ -64,8 +63,7 @@ export function VerificationRequest() {
           const data = await meRes.json()
           const p = data.profile || data.user || null
           if (p) {
-            setProfile({ is_verified: Boolean(p.is_verified), avatar_url: p.avatar_url })
-            setFormData((prev) => ({ ...prev, username: prev.username || (p.username ? `@${p.username}` : "") }))
+            setProfile({ is_verified: Boolean(p.is_verified) })
           }
         }
         if (reqRes?.ok) {
@@ -97,11 +95,10 @@ export function VerificationRequest() {
         },
         body: JSON.stringify({
           realName: formData.realName,
-          username: formData.username.replace(/^@/, ""),
           socialLinks: formData.socialLinks,
           reason: formData.reason,
           verificationType: formData.category,
-          documents: null,
+          documents: formData.documents,
         }),
       })
 
@@ -113,15 +110,15 @@ export function VerificationRequest() {
 
       toast({
         title: "Verification Request Submitted!",
-        description: "We'll review your application within 3-5 business days.",
+        description: "Your request is in the review queue. We'll notify you when a decision is made.",
       })
 
       // Reset form
       setFormData((prev) => ({
         realName: "",
-        username: prev.username,
         socialLinks: "",
         reason: "",
+        documents: "",
         category: prev.category,
       }))
       // Refresh request history so the pending banner shows immediately.
@@ -152,7 +149,7 @@ export function VerificationRequest() {
           </div>
         </div>
         <h1 className="text-3xl font-bold">Get Verified on loopapp.me</h1>
-        <p className="text-gray-600 dark:text-gray-400">Join verified creators and build trust with your audience</p>
+        <p className="text-gray-600 dark:text-gray-400">Verification is a manual authenticity review. Premium never grants a checkmark or priority.</p>
       </div>
 
       {alreadyVerified && (
@@ -204,10 +201,14 @@ export function VerificationRequest() {
         </div>
       )}
 
-      {!pendingRequest?.status && pendingRequest?.status === "rejected" && null}
+      {!user && (
+        <p className="rounded-xl border bg-muted/40 p-3 text-sm text-muted-foreground">
+          Sign in to request verification.
+        </p>
+      )}
 
-      {/* Request form — hidden while a request is pending or already verified */}
-      {!alreadyVerified && !pendingRequest && (
+      {/* Request form — hidden while signed out, pending or already verified */}
+      {user && !alreadyVerified && !pendingRequest && (
         <Card>
           <CardHeader>
             <CardTitle>Verification Application</CardTitle>
@@ -219,19 +220,10 @@ export function VerificationRequest() {
                   <Label htmlFor="realName">Real Name *</Label>
                   <Input
                     id="realName"
+                    maxLength={160}
                     value={formData.realName}
                     onChange={(e) => setFormData((prev) => ({ ...prev, realName: e.target.value }))}
                     placeholder="Your full legal name"
-                    required
-                  />
-                </div>
-                <div className="space-y-2">
-                  <Label htmlFor="username">Username *</Label>
-                  <Input
-                    id="username"
-                    value={formData.username}
-                    onChange={(e) => setFormData((prev) => ({ ...prev, username: e.target.value }))}
-                    placeholder="@yourusername"
                     required
                   />
                 </div>
@@ -259,6 +251,7 @@ export function VerificationRequest() {
                 <Label htmlFor="socialLinks">Social Media Links</Label>
                 <Textarea
                   id="socialLinks"
+                  maxLength={2000}
                   value={formData.socialLinks}
                   onChange={(e) => setFormData((prev) => ({ ...prev, socialLinks: e.target.value }))}
                   placeholder={"Instagram: @username\nWebsite: https://..."}
@@ -267,9 +260,25 @@ export function VerificationRequest() {
               </div>
 
               <div className="space-y-2">
+                <Label htmlFor="documents">Supporting link (optional)</Label>
+                <Input
+                  id="documents"
+                  type="url"
+                  maxLength={2048}
+                  value={formData.documents}
+                  onChange={(e) => setFormData((prev) => ({ ...prev, documents: e.target.value }))}
+                  placeholder="https://your-official-site.example"
+                />
+                <p className="text-xs text-muted-foreground">
+                  Add a public portfolio, press page or official website. Do not submit identity documents here.
+                </p>
+              </div>
+
+              <div className="space-y-2">
                 <Label htmlFor="reason">Why should you be verified? *</Label>
                 <Textarea
                   id="reason"
+                  maxLength={2000}
                   value={formData.reason}
                   onChange={(e) => setFormData((prev) => ({ ...prev, reason: e.target.value }))}
                   placeholder="Explain your public interest, notable achievements, or why verification would benefit the community..."
@@ -303,7 +312,7 @@ export function VerificationRequest() {
                 <div className="min-w-0 flex-1">
                   <p className="text-sm font-medium capitalize">{r.verification_type.replace("_", " ")} verification</p>
                   <p className="text-[11px] text-muted-foreground">{new Date(r.created_at).toLocaleDateString()}</p>
-                  {r.admin_notes && <p className="mt-0.5 text-[11px] text-muted-foreground">Note: {r.admin_notes}</p>}
+                  {r.rejection_reason && <p className="mt-0.5 text-[11px] text-muted-foreground">Note: {r.rejection_reason}</p>}
                 </div>
                 <Badge variant="outline" className="shrink-0 rounded-full text-[10px]">
                   {meta.label}

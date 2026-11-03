@@ -5,11 +5,14 @@ import Link from "next/link"
 import {
   ChevronDown,
   Compass,
+  Flame,
   Bookmark,
   Users,
   Plus,
   Search,
+  GitBranch,
   Video,
+  Zap,
   Star,
   X,
 } from "lucide-react"
@@ -42,8 +45,11 @@ import { DailyPulse } from "@/components/engagement/daily-pulse"
 
 const QUICK_LINKS = [
   { href: "/explore", label: "Explore", icon: Compass },
+  { href: "/drops", label: "Drops", icon: Flame },
   { href: "/communities", label: "Circles", icon: Users },
-  { href: "/trees", label: "Trees", icon: Video },
+  { href: "/explore?tab=chains", label: "Chains", icon: GitBranch },
+  { href: "/trees", label: "Reels", icon: Video },
+  { href: "/co-loop", label: "Co-Loop", icon: Zap },
   { href: "/search", label: "Search", icon: Search },
   { href: "/bookmarks", label: "Saved", icon: Bookmark },
 ] as const

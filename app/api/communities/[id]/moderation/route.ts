@@ -9,8 +9,11 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
     if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
     const sb = communityClient()
 
-    const { data: membership } = await sb.from("circle_members").select("role").eq("circle_id", id).eq("user_id", user.id).maybeSingle()
-    if (!canModerate(membership?.role)) return NextResponse.json({ error: "Moderator access required" }, { status: 403 })
+    const { data: membership, error: membershipError } = await sb.from("circle_members").select("role, status").eq("circle_id", id).eq("user_id", user.id).maybeSingle()
+    if (membershipError) return NextResponse.json({ error: "Could not verify Circle membership" }, { status: 503 })
+    if (!membership || !["active", "approved"].includes(String(membership.status || "")) || !canModerate(membership.role)) {
+      return NextResponse.json({ error: "Moderator access required" }, { status: 403 })
+    }
 
     const [{ data: reports }, { data: log }, { data: pendingPosts }, { data: circleRow }] = await Promise.all([
       sb
@@ -120,8 +123,11 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     }
 
     // Everything below requires moderation
-    const { data: membership } = await sb.from("circle_members").select("role").eq("circle_id", id).eq("user_id", actor.id).maybeSingle()
-    if (!canModerate(membership?.role)) return NextResponse.json({ error: "Moderator access required" }, { status: 403 })
+    const { data: membership, error: membershipError } = await sb.from("circle_members").select("role, status").eq("circle_id", id).eq("user_id", actor.id).maybeSingle()
+    if (membershipError) return NextResponse.json({ error: "Could not verify Circle membership" }, { status: 503 })
+    if (!membership || !["active", "approved"].includes(String(membership.status || "")) || !canModerate(membership.role)) {
+      return NextResponse.json({ error: "Moderator access required" }, { status: 403 })
+    }
 
     if (action === "resolve_report") {
       const { report_id, resolution = "resolved" } = body

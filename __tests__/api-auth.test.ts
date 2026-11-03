@@ -21,6 +21,14 @@ const createServerClient = vi.fn((..._args: unknown[]): any => {
   dbTouched = true
   throw new Error("database reached for an unauthorised request")
 })
+const checkBlockStatus = vi.fn(async (
+  _supabase: unknown,
+  _userId: string,
+  _otherUserId: string,
+): Promise<{ blocked: boolean; direction: "by_me" | "by_them" | null }> => ({
+  blocked: false,
+  direction: null,
+}))
 
 vi.mock("@/lib/server-auth", () => ({
   getUserFromRequest: (...args: unknown[]) => getUserFromRequest(...args),
@@ -29,6 +37,9 @@ vi.mock("@/lib/server-auth", () => ({
 vi.mock("@/lib/supabase", () => ({
   createServerClient: (...args: unknown[]) => createServerClient(...args),
   createClient: (...args: unknown[]) => createServerClient(...args),
+}))
+vi.mock("@/lib/user-blocks", () => ({
+  checkBlockStatus,
 }))
 
 /**
@@ -65,6 +76,8 @@ beforeEach(() => {
   dbTouched = false
   getUserFromRequest.mockReset()
   createServerClient.mockClear()
+  checkBlockStatus.mockReset()
+  checkBlockStatus.mockResolvedValue({ blocked: false, direction: null })
 })
 
 describe("admin routes reject unauthenticated callers", () => {
@@ -161,5 +174,229 @@ describe("message routes that must never be anonymous", () => {
 
     expect(response.status).toBe(401)
     expect(dbTouched).toBe(false)
+  })
+})
+
+
+function conversationAccessStub() {
+  let currentTable = ""
+  const writes: string[] = []
+  const builder: Record<string, any> = {}
+  builder.from = (table: string) => {
+    currentTable = table
+    return builder
+  }
+  for (const method of [
+    "select", "eq", "neq", "in", "is", "or", "filter",
+    "order", "limit", "range",
+  ]) {
+    builder[method] = () => builder
+  }
+  builder.update = () => {
+    writes.push(currentTable)
+    return builder
+  }
+  builder.insert = () => {
+    writes.push(currentTable)
+    return builder
+  }
+  builder.upsert = () => {
+    writes.push(currentTable)
+    return builder
+  }
+  builder.delete = () => {
+    writes.push(currentTable)
+    return builder
+  }
+  builder.maybeSingle = async () => ({
+    data: currentTable === "messages"
+      ? { id: "message-1", conversation_id: "conversation-1", reactions: [] }
+      : null,
+    error: null,
+  })
+  builder.single = builder.maybeSingle
+  builder.then = (resolve: (value: unknown) => unknown) =>
+    Promise.resolve({ data: [], error: null, count: 0 }).then(resolve)
+  return { client: builder, writes }
+}
+
+describe("message routes require active conversation membership", () => {
+  beforeEach(() => {
+    getUserFromRequest.mockResolvedValue({ id: "user-1", email: "member@example.com" })
+  })
+
+  it("does not reveal reactions to someone outside the conversation", async () => {
+    const stub = conversationAccessStub()
+    createServerClient.mockImplementation(() => stub.client as never)
+    const { GET } = await import("@/app/api/messages/reactions/route")
+
+    const response = await GET(get("https://loopapp.me/api/messages/reactions?message_id=message-1"))
+
+    expect(response.status).toBe(403)
+    expect(stub.writes).toEqual([])
+  })
+
+  it("does not let a non-member add or remove reactions", async () => {
+    const stub = conversationAccessStub()
+    createServerClient.mockImplementation(() => stub.client as never)
+    const { POST } = await import("@/app/api/messages/reactions/route")
+
+    const response = await POST(
+      new NextRequest("https://loopapp.me/api/messages/reactions", {
+        method: "POST",
+        body: JSON.stringify({ message_id: "message-1", emoji: "👍" }),
+      }),
+    )
+
+    expect(response.status).toBe(403)
+    expect(stub.writes).toEqual([])
+  })
+
+  it("does not mark a conversation read for a non-member", async () => {
+    const stub = conversationAccessStub()
+    createServerClient.mockImplementation(() => stub.client as never)
+    const { POST } = await import("@/app/api/messages/unread-count/route")
+
+    const response = await POST(
+      new NextRequest("https://loopapp.me/api/messages/unread-count", {
+        method: "POST",
+        body: JSON.stringify({ conversation_id: "conversation-1" }),
+      }),
+    )
+
+    expect(response.status).toBe(403)
+    expect(stub.writes).toEqual([])
+  })
+})
+
+
+describe("one-to-one conversations reject group management routes", () => {
+  beforeEach(() => {
+    getUserFromRequest.mockResolvedValue({ id: "owner-1", email: "owner@example.com" })
+    createServerClient.mockImplementation(
+      () => supabaseStub({ profile: { role: "owner", is_group: false } }) as never,
+    )
+  })
+
+  it("does not apply group settings to a direct conversation", async () => {
+    const { PATCH } = await import("@/app/api/conversations/[id]/group/route")
+    const response = await PATCH(
+      new NextRequest("https://loopapp.me/api/conversations/dm-1/group", {
+        method: "PATCH",
+        body: JSON.stringify({ name: "Unexpected group rename" }),
+      }),
+      { params: Promise.resolve({ id: "dm-1" }) },
+    )
+    expect(response.status).toBe(400)
+    expect((await response.json()).error).toBe("Not a group")
+  })
+
+  it("does not allow direct-message members to promote other participants", async () => {
+    const { PATCH } = await import("@/app/api/conversations/[id]/group/members/route")
+    const response = await PATCH(
+      new NextRequest("https://loopapp.me/api/conversations/dm-1/group/members", {
+        method: "PATCH",
+        body: JSON.stringify({ user_id: "other-1", role: "admin" }),
+      }),
+      { params: Promise.resolve({ id: "dm-1" }) },
+    )
+    expect(response.status).toBe(400)
+    expect((await response.json()).error).toBe("Not a group")
+  })
+
+  it("does not allow direct-message members to remove or leave through group management", async () => {
+    const { DELETE } = await import("@/app/api/conversations/[id]/group/members/route")
+    const response = await DELETE(
+      new NextRequest("https://loopapp.me/api/conversations/dm-1/group/members", {
+        method: "DELETE",
+        body: JSON.stringify({ user_id: "other-1" }),
+      }),
+      { params: Promise.resolve({ id: "dm-1" }) },
+    )
+    expect(response.status).toBe(400)
+    expect((await response.json()).error).toBe("Not a group")
+  })
+
+  it("keeps member-addition scoped to actual groups", async () => {
+    const { POST } = await import("@/app/api/conversations/[id]/group/members/route")
+    const response = await POST(
+      new NextRequest("https://loopapp.me/api/conversations/dm-1/group/members", {
+        method: "POST",
+        body: JSON.stringify({ user_ids: ["third-1"] }),
+      }),
+      { params: Promise.resolve({ id: "dm-1" }) },
+    )
+    expect(response.status).toBe(400)
+    expect((await response.json()).error).toBe("Not a group")
+  })
+})
+function followRequestActionStub() {
+  let currentTable = ""
+  const writes: string[] = []
+  const builder: Record<string, any> = {}
+  builder.from = (table: string) => {
+    currentTable = table
+    return builder
+  }
+  for (const method of ["select", "eq", "neq", "in", "is", "or", "order", "limit"]) {
+    builder[method] = () => builder
+  }
+  for (const method of ["insert", "update", "delete", "upsert"]) {
+    builder[method] = () => {
+      writes.push(method + ":" + currentTable)
+      return builder
+    }
+  }
+  builder.maybeSingle = async () => ({
+    data: currentTable === "follow_requests"
+      ? {
+          id: "request-1",
+          requester_id: "requester-1",
+          target_id: "target-1",
+          status: "pending",
+        }
+      : null,
+    error: null,
+  })
+  builder.single = builder.maybeSingle
+  builder.then = (resolve: (value: unknown) => unknown) =>
+    Promise.resolve({ data: [], error: null, count: 0 }).then(resolve)
+  return { client: builder, writes }
+}
+
+describe("follow request privacy and lifecycle", () => {
+  it("does not approve a request when either account has blocked the other", async () => {
+    getUserFromRequest.mockResolvedValue({ id: "target-1", email: "target@example.com" })
+    checkBlockStatus.mockResolvedValue({ blocked: true, direction: "by_them" })
+    const stub = followRequestActionStub()
+    createServerClient.mockImplementation(() => stub.client as never)
+    const { POST } = await import("@/app/api/users/follow-requests/route")
+
+    const response = await POST(
+      new NextRequest("https://loopapp.me/api/users/follow-requests", {
+        method: "POST",
+        body: JSON.stringify({ request_id: "request-1", action: "accept" }),
+      }),
+    )
+
+    expect(response.status).toBe(403)
+    expect(stub.writes).toEqual([])
+  })
+
+  it("lets a requester withdraw only their own pending request", async () => {
+    getUserFromRequest.mockResolvedValue({ id: "requester-1", email: "requester@example.com" })
+    const stub = followRequestActionStub()
+    createServerClient.mockImplementation(() => stub.client as never)
+    const { POST } = await import("@/app/api/users/follow-requests/route")
+
+    const response = await POST(
+      new NextRequest("https://loopapp.me/api/users/follow-requests", {
+        method: "POST",
+        body: JSON.stringify({ request_id: "request-1", action: "withdraw" }),
+      }),
+    )
+
+    expect(response.status).toBe(200)
+    expect(stub.writes).toEqual(["delete:follow_requests"])
   })
 })

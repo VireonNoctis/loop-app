@@ -1,4 +1,5 @@
 import Link from "next/link"
+import { getLegalPublicationInfo } from "@/lib/legal-operator"
 
 const sections = [
   {
@@ -6,8 +7,8 @@ const sections = [
     num: "1",
     title: "Acceptance of These Terms",
     body: [
-      "Welcome to loopapp.me (\"loopapp.me\", \"we\", \"us\", or \"our\"). These Terms of Service (\"Terms\") form a binding legal agreement between you (\"you\" or \"your\") and loopapp.me governing your access to and use of the loopapp.me platform, including our website, mobile applications, and all related services, features, tools, and content (collectively, the \"Service\").",
-      "By creating an account, accessing, browsing, or using the Service in any way, you confirm that you have read, understood, and agree to be bound by these Terms and our Privacy Policy. If you do not agree with any part of these Terms, you must not use the Service.",
+      "Welcome to loopapp.me (\"loopapp.me\", \"we\", \"us\", or \"our\"). These Terms of Service (\"Terms\") form an agreement between you (\"you\" or \"your\") and the person or legal entity operating loopapp.me (the Operator), governing your access to the platform, including its website, mobile applications, and related services, features, tools, and content (collectively, the \"Service\").",
+      "Creating an account does not, by itself, record your agreement to these Terms. Before you can use account features, you must review these Terms and the Privacy Policy and complete the separate agreement step presented by LOOP. Your agreement is recorded with the versions of the documents shown to you and the time you accepted them. If you do not agree to these Terms, do not accept them or use account features.",
       "If you are using the Service on behalf of an organization (including as an Organization account under Section 10), you represent and warrant that you have the authority to bind that organization to these Terms.",
     ],
   },
@@ -16,9 +17,9 @@ const sections = [
     num: "2",
     title: "Eligibility and Accounts",
     body: [
-      "You must be at least 13 years old to use the Service (or the minimum age required to consent to online services in your country, if higher). By using the Service you represent and warrant that you meet this requirement.",
-      "You are responsible for maintaining the confidentiality of your account credentials and for all activity that occurs under your account. You agree to notify us immediately of any unauthorized use of your account by emailing support@loop.com or opening a support ticket from the Help Center.",
-      "You may not create multiple accounts to circumvent restrictions, restrictions we impose, or to artificially inflate engagement, rewards, or referral bonuses. We may suspend or terminate accounts that we reasonably believe were created or used in violation of this Section.",
+      "You must be at least 13 years old to create an account, or older if the law where you live sets a higher minimum age for this type of service. The minimum age to use a service is not the same as the age at which a child can provide their own consent to every kind of personal-data processing. Where applicable law requires a parent or guardian to authorise consent-based processing, LOOP must obtain that authorisation before relying on the child's consent for that processing. Do not enter a false date of birth or use another person's identity.",
+      "You are responsible for keeping your sign-in credentials secure and for activity carried out through your account. Tell us promptly about suspected unauthorised access through the Help & Support Center at /help. A support ticket requires you to sign in so that we can verify and respond to the account holder.",
+      "You may not create multiple accounts to circumvent restrictions we impose or to artificially inflate engagement, rewards, or referral bonuses. We may suspend or terminate accounts that we reasonably believe were created or used in violation of this Section.",
     ],
   },
   {
@@ -48,9 +49,9 @@ const sections = [
     num: "4",
     title: "User Content and Your License to Us",
     body: [
-      "You retain full ownership of the content you create, upload, post, or otherwise make available on the Service (\"User Content\"). By posting User Content, you grant loopapp.me a non-exclusive, worldwide, royalty-free, sub-licensable, and transferable license to host, store, reproduce, distribute, display, perform, modify (for formatting and display purposes), and create derivative works of your User Content solely to operate, provide, promote, and improve the Service, and to allow other users to interact with it in accordance with the Service's intended functionality (for example, branching from your loop).",
-      "You represent and warrant that: (a) you own or have the necessary rights, licenses, and permissions to your User Content; (b) your User Content does not infringe the intellectual property, privacy, publicity, or other rights of any third party; and (c) your User Content complies with these Terms, our Community Guidelines, and all applicable laws.",
-      "If you believe that content on the Service infringes your copyright, you may submit a takedown notice to legal@loop.com including a description of the infringing content, your contact information, and a statement of good-faith belief that the use is not authorized.",
+      "You keep ownership of the content you create or upload (\"User Content\"). You grant LOOP a non-exclusive, worldwide, royalty-free licence to host, store, reproduce, technically adapt (for example, resize or transcode media), display and deliver that content only as needed to operate the Service and the features you choose to use. We may allow our infrastructure and service providers to process the content for those purposes, and may make it available to the people you choose to share or collaborate with. This licence does not transfer ownership to LOOP and does not give LOOP a general right to sell your content or use it in unrelated advertising. It lasts for as long as the content is available through the Service and for any limited period needed for backups, legal obligations, security investigations or dispute resolution.",
+      "You are responsible for making sure you have the rights and permissions needed to upload and share your User Content. Do not post another person's private information, images, recordings or work unless you have a lawful basis and any permission required. Your content must follow these Terms, the Community Guidelines and applicable law.",
+      "If you believe content on the Service infringes your copyright or other rights, report it through the Help & Support Center at /help and select the closest available category. Use the legal contact published at the top of this document for formal notices. The Operator must maintain a legally compliant notice process for the countries where the Service is offered.",
     ],
   },
   {
@@ -70,7 +71,7 @@ const sections = [
       "Encourage, facilitate, or assist any of the foregoing.",
     ],
     body2:
-      "We may remove content, restrict access, or suspend accounts that violate this Section, at our sole discretion, and we are not obligated to provide prior notice.",
+      "We may review reports, restrict or remove content, limit features, or suspend an account where we reasonably consider it necessary to enforce these Terms, protect users, investigate abuse, comply with law or respond to an urgent safety risk. Where required by applicable law, we will provide an explanation of the action and access to an available internal complaint or appeal process. We may act without advance notice where urgent action is needed to protect people, the Service or evidence.",
   },
   {
     id: "virtual-currency",
@@ -99,13 +100,13 @@ const sections = [
     num: "7A",
     title: "Refund Policy",
     body: [
-      "This Refund Policy explains how refunds work for paid purchases made through loopapp.me (\"Purchases\"). It applies only to real-money Purchases processed by our payment provider (Stripe) — Loop Coin balances, virtual items, and Pro memberships granted through promotions, admin actions, or rewards are not eligible for cash refunds.",
+      "This policy explains how to request a refund for a real-money purchase made through LOOP. The payment provider shown at checkout processes the payment. Promotional or complimentary benefits are not cash purchases. Nothing in this policy removes a cancellation, withdrawal, conformity or refund right that mandatory consumer law gives you.",
     ],
     list: [
-      "Eligible purchases — Card purchases of Loop Coins (coin packs), one-time Pro memberships, and Shop items paid with a card may be refunded if requested within 14 days of purchase and the purchased goods have not been consumed, transferred, or used in a way that cannot be reversed.",
-      "How to request — Open your Wallet → Recent Transactions, tap \"Request refund\" on the eligible purchase, and submit the reason. You can also contact support from the Help Center. Requests are reviewed within 2–3 business days.",
-      "Processing — Approved refunds are returned to your original payment method through Stripe. Depending on your bank or card issuer, it may take 3–10 business days for the refund to appear. When a coin-pack refund is approved, the credited Loop Coins are deducted from your balance; if a Shop item is refunded, the item is removed from your inventory; if a Pro membership is refunded, the membership ends immediately.",
-      "Coin purchases — Loop Coins spent in-app on gifts, boosts, or withdrawals are final and cannot be refunded or re-credited as cash.",
+      "Consumer withdrawal rights — Depending on your location and the type of digital service or content purchased, you may have a statutory period in which to withdraw from an online purchase. In Ireland and the EU, a 14-day withdrawal period commonly applies to online service contracts, subject to legal exceptions. For digital content or services supplied immediately, any legally required express request, consent or acknowledgement about the effect on that right must be presented separately at checkout; accepting these Terms is not a substitute for it.",
+      "How to request — Use the Help & Support Center at /help and select Billing & Payments. Sign in so we can identify the transaction. Include the purchase date and transaction reference, but never send full card numbers or security codes.",
+      "Processing — If a refund is approved, it will normally be returned to the original payment method. The payment provider and your bank control the time it takes to appear. Any reversal of Coins, items or subscription access will be explained as part of the decision and will not limit mandatory consumer rights.",
+      "Virtual balances — Loop Coins are not a bank balance, deposit or general-purpose payment instrument. They cannot be sold or transferred outside LOOP and have no cash redemption value unless a separate, lawful creator-payout arrangement expressly applies. This does not remove statutory rights that apply to the original purchase.",
       "Abuse — We may decline refund requests where we reasonably suspect fraud, abuse, or repeated refund requests (for example, buying a coin pack, spending the coins, then requesting a refund). Repeated abuse may result in suspension.",
       "Statutory rights — Nothing in this policy limits any mandatory consumer-protection rights you may have under the law of your country or state. If a mandatory right requires a longer refund window or different treatment, that right prevails.",
     ],
@@ -199,8 +200,8 @@ const sections = [
     num: "17",
     title: "Governing Law and Dispute Resolution",
     body: [
-      "These Terms are governed by the laws of the jurisdiction in which loopapp.me's principal place of business is located, without regard to its conflict-of-law provisions, except where mandatory local law applies to you.",
-      "We encourage you to resolve disputes informally first by contacting support@loop.com. If a dispute cannot be resolved informally, you agree that it shall be resolved exclusively in the competent courts of that jurisdiction, and you consent to the personal jurisdiction of those courts.",
+      "Mandatory consumer, privacy and data-protection rights in the country where you live continue to apply. The operator's country of establishment and the governing-law details must be completed by the Service operator before these Terms are treated as final; they cannot be inferred from the loopapp.me domain.",
+      "You can first try to resolve a service issue through the Help & Support Center at /help. Nothing in these Terms prevents you from contacting a regulator, supervisory authority or court, or from using a mandatory complaint or dispute process available under the law that applies to you.",
       "If any provision of these Terms is held to be invalid or unenforceable, that provision shall be limited or eliminated to the minimum extent necessary, and the remaining provisions shall remain in full force and effect.",
     ],
   },
@@ -209,7 +210,7 @@ const sections = [
     num: "18",
     title: "Changes to These Terms",
     body: [
-      "We may revise these Terms from time to time. When we make material changes, we will update the \"Last updated\" date below and, where appropriate, notify you through the Service or by email. Your continued use of the Service after changes take effect constitutes your acceptance of the revised Terms.",
+      "We may update these Terms when the Service, its features or legal requirements change. We will update the version and date shown above and provide notice of material changes through the Service where appropriate. Where a change requires renewed agreement, we will ask you to review and accept the new version before continuing to use account features; simply continuing to browse is not treated as a substitute for an explicit acceptance where one is required.",
       "If you do not agree to the revised Terms, you must stop using the Service before the changes take effect.",
     ],
   },
@@ -218,25 +219,56 @@ const sections = [
     num: "19",
     title: "Contact Us",
     body: [
-      "If you have questions about these Terms, our Privacy Policy, or the Service, you can reach us through the Help Center (Help → Contact Support, or the live Support Chat) or by email at support@loop.com.",
+      "For account help, visit the Help & Support Center at /help. For formal legal notices, contact the Operator using the legal contact details published at the top of this document. For data-protection requests, use the privacy contact published in the Privacy Policy.",
     ],
   },
 ]
 
 export default function TermsOfServicePage() {
+  const legalInfo = getLegalPublicationInfo()
+
   return (
-    <div className="min-h-screen bg-background">
-      <div className="container mx-auto max-w-4xl px-4 py-10">
+    <main className="legal-document min-h-screen w-full min-w-0 bg-background">
+      <div className="mx-auto w-full min-w-0 max-w-4xl px-3 py-8 sm:px-4 sm:py-10">
         <div className="mb-10">
           <h1 className="text-3xl font-bold tracking-tight sm:text-4xl">Terms of Service</h1>
           <p className="mt-3 text-sm text-muted-foreground">
-            Last updated: {new Date().toLocaleDateString()}
+            Version 1.2 · Last updated: 3 November 2026
           </p>
-          <p className="mt-4 max-w-2xl text-sm text-muted-foreground">
-            Please read these Terms carefully before using loopapp.me. They cover your rights and responsibilities,
-            our content and conduct rules, and the legal limits of our liability. By using loopapp.me, you agree to
-            these Terms and to our <Link href="/privacy" className="font-medium text-primary underline underline-offset-4">Privacy Policy</Link>.
+          <p className="mt-4 max-w-2xl text-sm leading-6 text-muted-foreground">
+            These Terms explain how LOOP works, what you may share, how collaboration and moderation operate,
+            and the rules for paid features. Read them together with the{" "}
+            <Link href="/privacy" className="font-medium text-primary underline underline-offset-4">Privacy Policy</Link>.
+            Your agreement is recorded separately on the legal review page.
           </p>
+          <div className="mt-6 rounded-2xl border border-border bg-card p-5 sm:p-6">
+            <p className="text-sm font-semibold">The essentials, in plain language</p>
+            <ul className="mt-3 grid gap-2 text-sm leading-6 text-muted-foreground sm:grid-cols-2">
+              <li>Keep your account secure and be truthful about your identity and age.</li>
+              <li>Share only content you own or have permission to use, and respect other people's privacy.</li>
+              <li>You keep ownership of your content; LOOP receives only the limited licence needed to run the features you use.</li>
+              <li>Treat people respectfully. Harassment, exploitation, impersonation and abuse are not allowed.</li>
+              <li>Coins and virtual items are not cash. Paid subscriptions renew until you cancel, subject to your legal rights.</li>
+              <li>Report problems. Where required, LOOP explains significant moderation actions and provides an available review route.</li>
+            </ul>
+          </div>
+          <section aria-labelledby="operator-details-heading" className="mt-4 rounded-xl border border-border bg-card p-4 text-sm leading-6">
+            <h2 id="operator-details-heading" className="font-semibold">Operator details</h2>
+            {legalInfo.operatorName ? <p className="mt-2 font-medium">{legalInfo.operatorName}</p> : null}
+            {legalInfo.operatorAddress ? <p className="whitespace-pre-wrap text-muted-foreground">{legalInfo.operatorAddress}</p> : null}
+            {legalInfo.operatorCountry ? <p className="text-muted-foreground">{legalInfo.operatorCountry}</p> : null}
+            {legalInfo.operatorRegistration ? <p className="text-muted-foreground">Registration: {legalInfo.operatorRegistration}</p> : null}
+            {legalInfo.legalContactEmail ? <p>Legal contact: <a className="underline underline-offset-4" href={"mailto:" + legalInfo.legalContactEmail}>{legalInfo.legalContactEmail}</a></p> : null}
+            {legalInfo.privacyContactEmail ? <p>Privacy contact: <a className="underline underline-offset-4" href={"mailto:" + legalInfo.privacyContactEmail}>{legalInfo.privacyContactEmail}</a></p> : null}
+            {!legalInfo.publicationReady ? (
+              <div role="alert" className="mt-3 rounded-lg border border-amber-500/30 bg-amber-500/5 p-3 text-xs text-muted-foreground">
+                <strong className="text-foreground">Publication is blocked.</strong> The service owner must complete these verified details before users can accept the documents:
+                <ul className="mt-2 list-disc space-y-1 pl-5">
+                  {legalInfo.missingFields.map((field) => <li key={field.key}>{field.label}</li>)}
+                </ul>
+              </div>
+            ) : <p className="mt-3 text-xs text-muted-foreground">Details supplied by the service deployment configuration.</p>}
+          </section>
         </div>
 
         <nav className="mb-10 rounded-2xl border border-border bg-card p-5">
@@ -279,16 +311,17 @@ export default function TermsOfServicePage() {
         ))}
 
         <div className="mt-12 rounded-2xl border border-border bg-card p-6">
-          <p className="text-sm font-semibold">Contact</p>
-          <p className="mt-2 text-sm text-muted-foreground">
-            Questions about these Terms? Reach us via the{" "}
-            <Link href="/support/chat" className="font-medium text-primary underline underline-offset-4">
-              Support Chat
-            </Link>{" "}
-            or email <span className="font-medium text-foreground">support@loop.com</span>.
+          <p className="text-sm font-semibold">Need help?</p>
+          <p className="mt-2 text-sm leading-6 text-muted-foreground">
+            Visit the <Link href="/help" className="font-medium text-primary underline underline-offset-4">Help &amp; Support Center</Link>.
+            Sign in and choose “Privacy &amp; data request” for a privacy-related request.
           </p>
+          <div className="mt-4 flex flex-wrap gap-3 text-sm">
+            <Link href="/privacy" className="font-medium text-primary underline underline-offset-4">Read the Privacy Policy</Link>
+            <Link href="/legal/consent?returnTo=%2F" className="font-medium text-primary underline underline-offset-4">Review your agreement</Link>
+          </div>
         </div>
       </div>
-    </div>
+    </main>
   )
 }

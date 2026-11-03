@@ -1,5 +1,5 @@
 "use client"
-import { useState } from "react"
+import { useCallback, useEffect, useRef, useState } from "react"
 import Link from "next/link"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
@@ -26,6 +26,7 @@ import {
   Zap,
 } from "lucide-react"
 import { useAuth } from "@/hooks/use-auth"
+import { CheckoutReceipt } from "@/components/premium/checkout-receipt"
 import { useToast } from "@/hooks/use-toast"
 import { PRO_FEATURES, PRO_PRICING, type ProPlanId } from "@/lib/pro-features"
 import { cn } from "@/lib/utils"
@@ -53,8 +54,71 @@ const iconMap = {
 export function PremiumUpgrade() {
   const [selectedPlan, setSelectedPlan] = useState<ProPlanId>("annual")
   const [busy, setBusy] = useState(false)
+  const [portalBusy, setPortalBusy] = useState(false)
+  const [checkoutSessionId, setCheckoutSessionId] = useState<string | null>(null)
+  const [checkoutCancelled, setCheckoutCancelled] = useState(false)
+  const coinPurchaseAttempt = useRef<{ plan: ProPlanId; key: string } | null>(null)
+  const [billingStatus, setBillingStatus] = useState<{
+    can_manage?: boolean
+    status?: string
+    current_period_end?: string | null
+    cancel_at_period_end?: boolean
+  } | null>(null)
   const { user, getAuthHeader, refreshUser } = useAuth()
   const { toast } = useToast()
+
+  useEffect(() => {
+    const url = new URL(window.location.href)
+    const checkout = url.searchParams.get("checkout")
+    if (checkout === "success") {
+      setCheckoutSessionId(url.searchParams.get("session_id"))
+    } else if (checkout === "cancelled") {
+      setCheckoutCancelled(true)
+    }
+  }, [])
+
+  useEffect(() => {
+    if (!user?.is_premium) {
+      setBillingStatus(null)
+      return
+    }
+    let active = true
+    void fetch("/api/premium/status", { headers: getAuthHeader(), cache: "no-store" })
+      .then(async (response) => {
+        const data = await response.json()
+        if (!response.ok) throw new Error(data.error || "Could not load billing status")
+        if (active) setBillingStatus(data.subscription || null)
+      })
+      .catch(() => {
+        if (active) setBillingStatus(null)
+      })
+    return () => { active = false }
+  }, [getAuthHeader, user?.id, user?.is_premium])
+
+  const manageBilling = async () => {
+    setPortalBusy(true)
+    try {
+      const response = await fetch("/api/premium/portal", {
+        method: "POST",
+        headers: getAuthHeader(),
+      })
+      const data = await response.json()
+      if (!response.ok || !data.url) throw new Error(data.error || "Could not open billing settings")
+      window.location.href = data.url
+    } catch (error: any) {
+      toast({
+        title: "Billing settings unavailable",
+        description: error.message || "Try again later.",
+        variant: "destructive",
+      })
+    } finally {
+      setPortalBusy(false)
+    }
+  }
+
+  const handleReceiptComplete = useCallback(() => {
+    void refreshUser()
+  }, [refreshUser])
 
   const activate = async (plan: ProPlanId, method: "coins" | "stripe" = "coins") => {
     if (!user) {
@@ -62,10 +126,20 @@ export function PremiumUpgrade() {
       return
     }
     setBusy(true)
+    const attempt = method === "coins"
+      ? coinPurchaseAttempt.current?.plan === plan
+        ? coinPurchaseAttempt.current
+        : { plan, key: crypto.randomUUID() }
+      : null
+    if (attempt) coinPurchaseAttempt.current = attempt
     try {
       const res = await fetch("/api/premium/activate", {
         method: "POST",
-        headers: { "Content-Type": "application/json", ...getAuthHeader() },
+        headers: {
+          "Content-Type": "application/json",
+          ...getAuthHeader(),
+          ...(attempt ? { "Idempotency-Key": attempt.key } : {}),
+        },
         body: JSON.stringify({ plan, method }),
       })
       const data = await res.json()
@@ -73,6 +147,9 @@ export function PremiumUpgrade() {
       if (method === "stripe" && data.checkout_url) {
         window.location.href = data.checkout_url
         return
+      }
+      if (attempt && coinPurchaseAttempt.current?.key === attempt.key) {
+        coinPurchaseAttempt.current = null
       }
       await refreshUser?.()
       toast({ title: "You're Pro!", description: data.message })
@@ -85,6 +162,21 @@ export function PremiumUpgrade() {
     } finally {
       setBusy(false)
     }
+  }
+
+  if (checkoutSessionId) {
+    return (
+      <div className="mx-auto max-w-2xl">
+        <CheckoutReceipt
+          sessionId={checkoutSessionId}
+          onComplete={handleReceiptComplete}
+          onClose={() => {
+            setCheckoutSessionId(null)
+            window.history.replaceState({}, "", "/premium")
+          }}
+        />
+      </div>
+    )
   }
 
   if (user?.is_premium) {
@@ -101,7 +193,7 @@ export function PremiumUpgrade() {
         </div>
         <Card>
           <CardContent className="grid gap-3 p-6 text-left">
-            {PRO_FEATURES.map((feature) => (
+            {PRO_FEATURES.filter((feature) => feature.enforced).map((feature) => (
               <div key={feature.id} className="flex items-start gap-3">
                 <Check className="mt-0.5 h-5 w-5 shrink-0 text-emerald-500" />
                 <div>
@@ -118,10 +210,20 @@ export function PremiumUpgrade() {
               <Lock className="mr-2 h-4 w-4" /> Enter the Pro Lounge
             </Link>
           </Button>
+          {billingStatus?.can_manage ? (
+            <Button variant="outline" className="rounded-full" onClick={() => void manageBilling()} disabled={portalBusy}>
+              {portalBusy ? "Opening billing…" : "Manage subscription"}
+            </Button>
+          ) : null}
           <Button asChild variant="outline" className="rounded-full">
             <Link href="/">Back to feed</Link>
           </Button>
         </div>
+        {billingStatus?.cancel_at_period_end && billingStatus.current_period_end ? (
+          <p className="text-sm text-muted-foreground">
+            Your card subscription is set to end on {new Date(billingStatus.current_period_end).toLocaleDateString()}. Pro remains active until then.
+          </p>
+        ) : null}
       </div>
     )
   }
@@ -131,6 +233,14 @@ export function PremiumUpgrade() {
 
   return (
     <div className="mx-auto max-w-5xl space-y-8">
+      {checkoutCancelled ? (
+        <Card className="border-border/70">
+          <CardContent className="flex items-center justify-between gap-3 p-4">
+            <p className="text-sm text-muted-foreground">Checkout was cancelled. No subscription was started.</p>
+            <Button variant="ghost" size="sm" onClick={() => setCheckoutCancelled(false)}>Dismiss</Button>
+          </CardContent>
+        </Card>
+      ) : null}
       <div className="space-y-3 text-center">
         <div className="mx-auto flex h-14 w-14 items-center justify-center rounded-full bg-gradient-to-br from-amber-400 to-orange-600">
           <Crown className="h-7 w-7 text-white" />
@@ -142,8 +252,7 @@ export function PremiumUpgrade() {
           Loop Pro that actually feels worth it
         </h1>
         <p className="mx-auto max-w-2xl text-muted-foreground">
-          Lower intro price. Exclusive perks: Secret Pro Circle lounge, 0% cashout fees, 3× XP,
-          neon customizer, multi-uploads, secret shop drops, and 50% algorithmic feed boost.
+          Choose a recurring card subscription or a separate prepaid Coin pass. Both unlock the same Pro membership; card renewals can be cancelled through billing settings.
         </p>
       </div>
 
@@ -202,7 +311,7 @@ export function PremiumUpgrade() {
                 {"savings" in item && item.savings ? (
                   <p className="text-sm font-medium text-emerald-600">{item.savings}</p>
                 ) : null}
-                <p className="text-xs text-muted-foreground">or {item.coins.toLocaleString()} Loop Coins</p>
+                <p className="text-xs text-muted-foreground">or {item.coins.toLocaleString()} Loop Coins as a prepaid pass</p>
               </div>
             </CardHeader>
           </Card>
@@ -217,7 +326,7 @@ export function PremiumUpgrade() {
           className="w-full rounded-full bg-gradient-to-r from-amber-500 to-orange-600 text-white hover:from-amber-400 hover:to-orange-500 sm:w-auto"
         >
           <Coins className="mr-2 h-4 w-4" />
-          {busy ? "Unlocking…" : `Unlock ${plan.name} · ${plan.coins} coins`}
+          {busy ? "Unlocking…" : `Prepay ${plan.name} · ${plan.coins} coins`}
         </Button>
         <Button
           size="lg"
@@ -227,7 +336,7 @@ export function PremiumUpgrade() {
           className="w-full rounded-full border-emerald-500/40 text-emerald-600 hover:bg-emerald-500/10 hover:text-emerald-600 dark:text-emerald-400 sm:w-auto"
         >
           <CreditCard className="mr-2 h-4 w-4" />
-          {busy ? "Redirecting…" : `Pay with card · ${plan.priceLabel}`}
+          {busy ? "Redirecting…" : `Subscribe with card · ${plan.priceLabel}`}
         </Button>
         <Button asChild size="lg" variant="ghost" className="w-full rounded-full sm:w-auto">
           <Link href="/shop">Buy coins in Shop</Link>
@@ -236,7 +345,7 @@ export function PremiumUpgrade() {
       {user ? (
         <p className="text-center text-sm text-muted-foreground">
           Your balance: <span className="font-semibold text-foreground">{balance.toLocaleString()} coins</span>
-          {balance < plan.coins ? " — grab a coin pack first" : " — ready to go"}
+          {balance < plan.coins ? " — a prepaid pass needs enough Coins" : " — enough for a prepaid pass"}
         </p>
       ) : (
         <p className="text-center text-sm">
@@ -246,6 +355,9 @@ export function PremiumUpgrade() {
           to unlock Pro
         </p>
       )}
+      <p className="text-center text-xs text-muted-foreground">
+        Card subscriptions renew {selectedPlan === "annual" ? "yearly" : "monthly"}. Coin passes do not auto-renew.
+      </p>
 
       <div className="grid gap-3 sm:grid-cols-2">
         {PRO_FEATURES.map((feature) => {
@@ -257,7 +369,14 @@ export function PremiumUpgrade() {
                   <Icon className="h-5 w-5" />
                 </div>
                 <div className="min-w-0">
-                  <p className="font-semibold">{feature.title}</p>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <p className="font-semibold">{feature.title}</p>
+                    {!feature.enforced ? (
+                      <Badge variant="outline" className="text-[10px] text-muted-foreground">
+                        In development · Not available yet
+                      </Badge>
+                    ) : null}
+                  </div>
                   <p className="mt-0.5 text-sm text-muted-foreground">{feature.description}</p>
                   <p className="mt-2 text-xs text-muted-foreground">
                     Free: {feature.free} · <span className="font-medium text-foreground">Pro: {feature.pro}</span>

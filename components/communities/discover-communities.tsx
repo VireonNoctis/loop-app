@@ -1,12 +1,12 @@
 "use client"
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react"
+import { useCallback, useEffect, useRef, useState } from "react"
 import Link from "next/link"
 import Image from "next/image"
 import { useRouter } from "next/navigation"
 import { useAuth } from "@/hooks/use-auth"
+import { resolveCircleMembershipAction } from "@/lib/circle-membership-state"
 import { Button } from "@/components/ui/button"
-import { Badge } from "@/components/ui/badge"
 import { Input } from "@/components/ui/input"
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
 import { Skeleton } from "@/components/ui/skeleton"
@@ -20,7 +20,6 @@ import {
   Plus,
   ArrowRight,
   Lock,
-  BadgeCheck,
   Activity,
   Clock,
   Zap,
@@ -41,6 +40,7 @@ interface CommunityItem {
   accent_color?: string
   pulse: string
   is_member: boolean
+  membership_status?: string | null
   user_role?: string
   created_at: string
   tags?: string[]
@@ -71,7 +71,7 @@ const PULSE_LABELS: Record<string, string> = {
 }
 
 export function DiscoverCommunities() {
-  const { user, loading: authLoading } = useAuth()
+  const { user, loading: authLoading, getAuthHeader } = useAuth()
   const router = useRouter()
   const [sort, setSort] = useState<string>("trending")
   const [category, setCategory] = useState<string>("all")
@@ -98,7 +98,7 @@ export function DiscoverCommunities() {
     } finally {
       setLoading(false)
     }
-  }, [sort, category, search])
+  }, [sort, category, search, user?.id])
 
   useEffect(() => {
     load()
@@ -121,13 +121,35 @@ export function DiscoverCommunities() {
     }
     setJoining(String(id))
     try {
-      const res = await fetch(`/api/circles/${id}/join`, { method: "POST" })
+      const res = await fetch(`/api/circles/${id}/join`, { method: "POST", headers: getAuthHeader() })
       const data = await res.json()
       if (!res.ok) throw new Error(data.error || "Failed to join")
-      setCommunities((prev) => prev.map((c) => (String(c.id) === String(id) ? { ...c, is_member: true } : c)))
+      if (data.status !== "active" && data.status !== "pending") throw new Error("Unknown Circle membership state")
+      setCommunities((prev) => prev.map((c) => String(c.id) === String(id)
+        ? { ...c, is_member: data.status === "active", membership_status: data.status }
+        : c))
       router.refresh()
     } catch (e: any) {
-      setError(e.message)
+      setError(e.message || "Could not join Circle")
+    } finally {
+      setJoining(null)
+    }
+  }
+
+  const cancelJoinRequest = async (id: string | number, e: React.MouseEvent) => {
+    e.preventDefault()
+    e.stopPropagation()
+    setJoining(String(id))
+    try {
+      const res = await fetch(`/api/circles/${id}/join`, { method: "DELETE", headers: getAuthHeader() })
+      const data = await res.json()
+      if (!res.ok) throw new Error(data.error || "Could not cancel request")
+      setCommunities((prev) => prev.map((c) => String(c.id) === String(id)
+        ? { ...c, is_member: false, membership_status: null }
+        : c))
+      router.refresh()
+    } catch (e: any) {
+      setError(e.message || "Could not cancel request")
     } finally {
       setJoining(null)
     }
@@ -296,30 +318,27 @@ export function DiscoverCommunities() {
                   </div>
 
                   <div className="mt-auto flex items-center gap-2 pt-1">
-                    {showJoin && (
-                      c.is_member ? (
-                        <Button
-                          size="sm"
-                          variant="outline"
+                    {showJoin && (() => {
+                      const action = resolveCircleMembershipAction(c.membership_status, c.is_private, c.is_member)
+                      if (action.kind === "enter") {
+                        return (
+                          <Button size="sm" variant="outline" className="flex-1 rounded-full text-xs"
+                            onClick={(e) => { e.preventDefault(); router.push(`/communities/${c.id}`) }}>
+                            Enter Circle <ArrowRight className="h-3 w-3 ml-1" />
+                          </Button>
+                        )
+                      }
+                      const busy = joining === String(c.id)
+                      const cancelling = action.kind === "cancel-request"
+                      return (
+                        <Button size="sm" variant={cancelling || action.kind === "unavailable" ? "outline" : "default"}
                           className="flex-1 rounded-full text-xs"
-                          onClick={(e) => {
-                            e.preventDefault()
-                            router.push(`/communities/${c.id}`)
-                          }}
-                        >
-                          Enter world <ArrowRight className="h-3 w-3 ml-1" />
-                        </Button>
-                      ) : (
-                        <Button
-                          size="sm"
-                          className="flex-1 rounded-full text-xs"
-                          disabled={joining === String(c.id)}
-                          onClick={(e) => joinCommunity(c.id, e)}
-                        >
-                          {joining === String(c.id) ? "Joining…" : c.is_private ? "Request to join" : "Join"}
+                          disabled={busy || action.kind === "unavailable"}
+                          onClick={(e) => cancelling ? cancelJoinRequest(c.id, e) : joinCommunity(c.id, e)}>
+                          {busy ? (cancelling ? "Cancelling…" : "Joining…") : action.label}
                         </Button>
                       )
-                    )}
+                    })()}
                   </div>
                 </div>
               </Link>

@@ -32,7 +32,7 @@ export default function SearchQueryPage({ params }: SearchPageProps) {
       <main className="mx-auto max-w-3xl space-y-6 px-4 py-6">
         <div>
           <h1 className="text-2xl font-bold tracking-tight">Search</h1>
-          <p className="text-sm text-muted-foreground">People, loops, hashtags, and communities</p>
+          <p className="text-sm text-muted-foreground">People, Loops, Chains, Collections, hashtags, and Circles</p>
         </div>
 
         <form onSubmit={submit} className="flex gap-2">

@@ -4,6 +4,7 @@ import { createContext, useCallback, useContext, useEffect, useRef, useState, ty
 import { getSupabaseBrowserClient } from "@/lib/supabase-browser"
 import { authClient } from "@/lib/auth-client"
 import { readCachedUser as readCachedUserFromCache, writeCachedUser as writeCachedUserToCache } from "@/lib/auth-cache"
+import type { StaffRole } from "@/lib/staff-roles"
 
 const supabase = getSupabaseBrowserClient()
 
@@ -29,6 +30,8 @@ interface User {
   premium_expires_at?: string
   is_verified: boolean
   is_team_member?: boolean
+  is_moderator?: boolean
+  staff_role?: StaffRole | null
   is_sponsor?: boolean
   is_admin: boolean
   is_organization?: boolean
@@ -119,6 +122,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       premium_expires_at: undefined,
       is_verified: false,
       is_admin: false,
+      is_moderator: false,
+      staff_role: null,
       is_organization: false,
       theme_data: undefined,
       interests: [],
@@ -141,7 +146,15 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         ? true
         : onboardingCompleted
 
-    const token = sessionData.session?.id || sessionData.session?.token || sessionData.user.id
+    const token = sessionData.session?.token || sessionData.session?.id || sessionData.user.id
+    const staffRole: StaffRole | null =
+      profileData.staff_role === "developer" || profileData.staff_role === "admin" || profileData.staff_role === "moderator"
+        ? profileData.staff_role
+        : profileData.is_admin === true
+          ? "developer"
+          : profileData.is_moderator === true
+            ? "moderator"
+            : null
 
     return {
       id: sessionData.user.id,
@@ -160,7 +173,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       is_premium: profileData.is_premium ?? previous?.is_premium ?? false,
       premium_expires_at: profileData.premium_expires_at ?? previous?.premium_expires_at,
       is_verified: profileData.is_verified ?? previous?.is_verified ?? false,
-      is_admin: profileData.is_admin ?? previous?.is_admin ?? false,
+      is_admin: staffRole === "developer" || staffRole === "admin",
+      is_moderator: staffRole === "moderator",
+      staff_role: staffRole,
       is_team_member: profileData.is_team_member ?? previous?.is_team_member ?? false,
       is_organization: Boolean(profileData.is_organization ?? previous?.is_organization ?? false),
       organization_name: profileData.organization_name ?? previous?.organization_name,
@@ -243,7 +258,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
 
     const sessionUser = sessionData.user
-    const token = sessionData.session?.id || sessionData.session?.token || sessionUser.id
+    const token = sessionData.session?.token || sessionData.session?.id || sessionUser.id
 
     if (!userRef.current || userRef.current.id !== sessionUser.id) {
       setUser(mapSessionUser(sessionData, buildFallbackProfile(sessionUser)))
@@ -455,7 +470,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const loginWithGoogle = async (callbackURL?: string) => {
     const result = await authClient.signIn.social({
       provider: "google",
-      callbackURL: callbackURL || `${window.location.origin}/onboarding`,
+      callbackURL: callbackURL || `${window.location.origin}/legal/consent?returnTo=${encodeURIComponent("/onboarding")}`,
     })
     // Surface provider/config failures to the caller instead of silently
     // leaving the user on the login page.

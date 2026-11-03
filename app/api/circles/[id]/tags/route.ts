@@ -1,16 +1,24 @@
 import { type NextRequest, NextResponse } from "next/server"
-import { createClient } from "@/lib/supabase"
+import { createServerClient } from "@/lib/supabase"
 import { getUserFromRequest } from "@/lib/server-auth"
+import { checkCirclePrivateAccess } from "@/lib/circle-access"
 
-const supabase = createClient(
-  process.env.NEXT_PUBLIC_SUPABASE_URL || "https://placeholder.supabase.co",
-  process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || "placeholder",
-)
+function getCircleTagsClient() {
+  if (!process.env.SUPABASE_SERVICE_ROLE_KEY) return null
+  return createServerClient()
+}
 
 // GET — any visitor may read the circle's tag vocabulary.
-export async function GET(_request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+export async function GET(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   try {
     const { id: circleId } = await params
+    const supabase = getCircleTagsClient()
+    if (!supabase) return NextResponse.json({ error: "Circle tags are unavailable" }, { status: 503 })
+    const access = await checkCirclePrivateAccess(circleId, request.headers.get("authorization"))
+    if (access.isPrivate && !access.canView) {
+      return NextResponse.json({ error: "This Circle is private", locked: true }, { status: 403 })
+    }
+
     const { data: tags, error } = await supabase
       .from("circle_tags")
       .select("*")
@@ -50,6 +58,8 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
   try {
     const user = await getUserFromRequest(request)
     if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
+    const supabase = getCircleTagsClient()
+    if (!supabase) return NextResponse.json({ error: "Circle tags are unavailable" }, { status: 503 })
 
     const { id: circleId } = await params
     const body = await request.json().catch(() => ({}))
@@ -97,6 +107,8 @@ export async function DELETE(request: NextRequest, { params }: { params: Promise
   try {
     const user = await getUserFromRequest(request)
     if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
+    const supabase = getCircleTagsClient()
+    if (!supabase) return NextResponse.json({ error: "Circle tags are unavailable" }, { status: 503 })
 
     const { id: circleId, tagId } = await params
     const { data: member } = await supabase

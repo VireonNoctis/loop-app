@@ -3,14 +3,28 @@
 import { useEffect, useState } from "react"
 import Link from "next/link"
 import { usePathname } from "next/navigation"
-import { Bell, Bot, Home, MessageCircle, Orbit } from "lucide-react"
+import { AnimatedIconView } from "@/components/icons/animated/animated-icon-view"
+import type { AnimatedIconComponent } from "@/components/icons/animated/animated-icon-view"
+import HomeIcon from "@/components/icons/animated/home-icon"
+import MagnifierIcon from "@/components/icons/animated/magnifier-icon"
+import PenIcon from "@/components/icons/animated/pen-icon"
+import UsersIcon from "@/components/icons/animated/users-icon"
+import MessageCircleIcon from "@/components/icons/animated/message-circle-icon"
 import { useAuth } from "@/hooks/use-auth"
 import { cn } from "@/lib/utils"
 import { useLoginGate } from "@/hooks/use-login-gate"
 import { useUnreadMessages } from "@/hooks/use-unread-messages"
-import { useUnreadNotifications } from "@/hooks/use-unread-notifications"
 import { formatUnreadBadge } from "@/lib/unread-messages"
+import { EMPTY_AUDIENCE, primarySidebarNav } from "@/lib/sidebar-nav"
 import { MobileSidebarSheet } from "@/components/left-sidebar"
+
+const MOBILE_NAV_ICONS: Record<string, AnimatedIconComponent> = {
+  "/": HomeIcon,
+  "/explore": MagnifierIcon,
+  "/create": PenIcon,
+  "/communities": UsersIcon,
+  "/messages": MessageCircleIcon,
+}
 
 const HIDDEN_PREFIXES = [
   "/login",
@@ -21,16 +35,15 @@ const HIDDEN_PREFIXES = [
   "/verify-email",
   "/terms",
   "/privacy",
+  "/legal",
 ]
 
 /**
  * Mobile tab bar.
  *
- * Five destinations, no drawer button: the Co-Loop studio sits in the middle
- * as a raised, unmistakable action, Loop AI and Notifications take the slots
- * that used to hold Search and Menu (both already live in the header), and the
- * sidebar opens by swiping in from the left edge — the gesture people already
- * expect on a phone.
+ * The same five core destinations are used on desktop and mobile. Create is
+ * the central action; notifications stay in the global header, while specialist
+ * tools remain available through the secondary navigation sheet.
  */
 export function MobileBottomNav() {
   const pathname = usePathname()
@@ -38,7 +51,6 @@ export function MobileBottomNav() {
   const { requireAuth, LoginGateDialog } = useLoginGate()
   const [menuOpen, setMenuOpen] = useState(false)
   const unreadMessages = useUnreadMessages()
-  const unreadNotifications = useUnreadNotifications()
 
   // Swipe in from the left edge to reveal the sidebar. Vertical swipes are
   // ignored so scrolling never fights the gesture.
@@ -85,20 +97,21 @@ export function MobileBottomNav() {
 
   type TabItem = {
     href: string
-    icon: typeof Home
+    icon: AnimatedIconComponent
     label: string
     auth?: boolean
     center?: boolean
     badge?: number
   }
 
-  const items: TabItem[] = [
-    { href: "/", icon: Home, label: "Home" },
-    { href: "/messages", icon: MessageCircle, label: "Messages", auth: true, badge: unreadMessages },
-    { href: "/co-loop", icon: Orbit, label: "Co-Loop", center: true },
-    { href: "/loop-ai", icon: Bot, label: "Loop AI" },
-    { href: "/notifications", icon: Bell, label: "Alerts", auth: true, badge: unreadNotifications },
-  ]
+  const items: TabItem[] = primarySidebarNav(EMPTY_AUDIENCE).map((item) => ({
+    href: item.href,
+    icon: MOBILE_NAV_ICONS[item.href] ?? HomeIcon,
+    label: item.label,
+    center: item.href === "/create",
+    auth: item.href === "/messages",
+    badge: item.href === "/messages" ? unreadMessages : undefined,
+  }))
 
   return (
     <>
@@ -106,7 +119,7 @@ export function MobileBottomNav() {
       <MobileSidebarSheet open={menuOpen} onOpenChange={setMenuOpen} />
 
       <nav
-        className="fixed inset-x-0 bottom-0 z-50 border-t border-border bg-background/95 pb-[env(safe-area-inset-bottom)] backdrop-blur-xl lg:hidden"
+        className="loop-mobile-nav fixed inset-x-0 bottom-0 z-50 border-t border-border bg-background/95 pb-[env(safe-area-inset-bottom)] backdrop-blur-xl lg:hidden"
         aria-label="Mobile navigation"
       >
         <div className="grid grid-cols-5 items-end px-1 pb-1.5 pt-1">
@@ -121,15 +134,15 @@ export function MobileBottomNav() {
                   key={item.href}
                   href={item.href}
                   aria-current={active ? "page" : undefined}
-                  className="group relative flex flex-col items-center justify-end gap-0.5 pb-0.5 text-[10px] font-semibold"
+                  className="group relative flex min-h-14 flex-col items-center justify-end gap-0.5 pb-0.5 text-[10px] font-semibold touch-manipulation"
                 >
                   <span
                     className={cn(
-                      "-mt-6 mb-0.5 flex h-12 w-12 items-center justify-center rounded-2xl bg-gradient-to-br from-cyan-400 to-violet-500 text-white shadow-lg shadow-cyan-500/25 ring-4 ring-background transition-transform group-active:scale-95",
+                      "loop-tactile -mt-6 mb-0.5 flex h-12 w-12 items-center justify-center rounded-2xl bg-primary text-primary-foreground shadow-lg ring-4 ring-background transition-transform group-active:translate-y-1",
                       active && "scale-105",
                     )}
                   >
-                    <item.icon className="h-5 w-5" />
+                    <AnimatedIconView component={item.icon} size={21} className="h-5 w-5" />
                   </span>
                   <span className={active ? "text-primary" : "text-muted-foreground"}>{item.label}</span>
                 </Link>
@@ -145,7 +158,7 @@ export function MobileBottomNav() {
                 }}
                 aria-current={active ? "page" : undefined}
                 className={cn(
-                  "group relative flex flex-col items-center justify-center gap-0.5 rounded-xl py-2 text-[10px] font-medium transition-colors",
+                  "group relative flex min-h-11 min-w-11 flex-col items-center justify-center gap-0.5 rounded-xl py-2 text-[10px] font-medium transition-colors touch-manipulation",
                   active ? "text-primary" : "text-muted-foreground hover:text-foreground",
                 )}
               >
@@ -156,7 +169,7 @@ export function MobileBottomNav() {
                   )}
                 />
                 <div className="relative">
-                  <item.icon className={cn("h-5 w-5", active && "stroke-[2.4]")} />
+                  <AnimatedIconView component={item.icon} size={20} className="h-5 w-5" />
                   {badge > 0 && (
                     <span className="absolute -right-2.5 -top-1 flex h-4 min-w-4 items-center justify-center rounded-full bg-rose-500 px-1 text-[9px] font-bold text-white ring-2 ring-background">
                       {formatUnreadBadge(badge)}

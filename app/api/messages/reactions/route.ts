@@ -37,6 +37,25 @@ export async function GET(request: NextRequest) {
     if (!messageId) return NextResponse.json({ error: "message_id required" }, { status: 400 })
 
     const supabase = createServerClient()
+    const { data: message, error: messageError } = await supabase
+      .from("messages")
+      .select("id, conversation_id, reactions")
+      .eq("id", messageId)
+      .maybeSingle()
+
+    if (messageError) return NextResponse.json({ error: "Could not load message" }, { status: 500 })
+    if (!message) return NextResponse.json({ error: "Message not found" }, { status: 404 })
+
+    const { data: membership, error: membershipError } = await supabase
+      .from("conversation_participants")
+      .select("id")
+      .eq("conversation_id", message.conversation_id)
+      .eq("user_id", user.id)
+      .is("left_at", null)
+      .maybeSingle()
+
+    if (membershipError) return NextResponse.json({ error: "Could not verify conversation access" }, { status: 500 })
+    if (!membership) return NextResponse.json({ error: "Forbidden" }, { status: 403 })
 
     // Prefer dedicated table; fall back to reactions JSON on message
     const { data: rows, error } = await supabase
@@ -52,8 +71,7 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ success: true, reactions: grouped })
     }
 
-    const { data: message } = await supabase.from("messages").select("reactions").eq("id", messageId).maybeSingle()
-    const raw = Array.isArray(message?.reactions) ? message.reactions : []
+    const raw = Array.isArray(message.reactions) ? message.reactions : []
     return NextResponse.json({ success: true, reactions: raw })
   } catch (error) {
     console.error("Message reactions GET error:", error)
@@ -67,8 +85,8 @@ export async function POST(request: NextRequest) {
     if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
 
     const body = await request.json()
-    const messageId = body.message_id as string
-    const emoji = String(body.emoji || "").slice(0, 8)
+    const messageId = typeof body.message_id === "string" ? body.message_id : ""
+    const emoji = String(body.emoji || "").trim().slice(0, 8)
     const action = body.action === "remove" ? "remove" : "add"
 
     if (!messageId || !emoji) {
@@ -76,13 +94,25 @@ export async function POST(request: NextRequest) {
     }
 
     const supabase = createServerClient()
-    const { data: message } = await supabase
+    const { data: message, error: messageError } = await supabase
       .from("messages")
       .select("id, conversation_id, reactions")
       .eq("id", messageId)
       .maybeSingle()
 
+    if (messageError) return NextResponse.json({ error: "Could not load message" }, { status: 500 })
     if (!message) return NextResponse.json({ error: "Message not found" }, { status: 404 })
+
+    const { data: membership, error: membershipError } = await supabase
+      .from("conversation_participants")
+      .select("id")
+      .eq("conversation_id", message.conversation_id)
+      .eq("user_id", user.id)
+      .is("left_at", null)
+      .maybeSingle()
+
+    if (membershipError) return NextResponse.json({ error: "Could not verify conversation access" }, { status: 500 })
+    if (!membership) return NextResponse.json({ error: "Forbidden" }, { status: 403 })
 
     let reactions: GroupedReaction[] | null = null
 

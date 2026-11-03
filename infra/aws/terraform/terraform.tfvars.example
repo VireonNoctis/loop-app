@@ -1,0 +1,13 @@
+# Copy to terraform.tfvars for an explicitly approved AWS deployment.
+# Billable resources stay disabled until the account owner approves the budget.
+enable_billable_resources = false
+region                    = "eu-west-1"
+project_name              = "loop"
+environment               = "production"
+
+# Required only when enable_billable_resources = true:
+# vpc_id                 = "vpc-..."
+# private_subnet_ids     = ["subnet-...", "subnet-..."]
+# api_security_group_id = "sg-..."
+# bucket_name            = "loop-media-your-unique-suffix"
+# db_password            = "supply via TF_VAR_db_password instead of committing it"

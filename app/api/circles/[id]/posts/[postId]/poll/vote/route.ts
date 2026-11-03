@@ -1,11 +1,11 @@
 import { type NextRequest, NextResponse } from "next/server"
-import { createClient } from "@/lib/supabase"
+import { createServerClient } from "@/lib/supabase"
 import { getUserFromRequest } from "@/lib/server-auth";
 
-const supabase = createClient(
-  process.env.NEXT_PUBLIC_SUPABASE_URL || "https://placeholder.supabase.co",
-  process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || "placeholder",
-)
+function getCirclePollClient() {
+  if (!process.env.SUPABASE_SERVICE_ROLE_KEY) return null
+  return createServerClient()
+}
 
 
 export async function POST(
@@ -16,6 +16,9 @@ export async function POST(
 
     const user = await getUserFromRequest(request)
     if (!user) return NextResponse.json({ error: "Invalid token" }, { status: 401 })
+
+    const supabase = getCirclePollClient()
+    if (!supabase) return NextResponse.json({ error: "Circle poll service is unavailable" }, { status: 503 })
 
     const { id: circleId, postId } = await params
     const { optionId, optionIndex } = await request.json()

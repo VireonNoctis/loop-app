@@ -1,13 +1,12 @@
 import { type NextRequest, NextResponse } from "next/server"
 import { createServerClient } from "@/lib/supabase"
 import { getUserFromRequest } from "@/lib/server-auth"
+import { checkCoLoopInvitationRevocation } from "@/lib/co-loop-session-access"
 
 export const dynamic = "force-dynamic"
 
 const MAX_CONTENT = 40_000
 const MAX_VERSIONS_LISTED = 100
-
-type CoAuthorEntry = { id?: string; username?: string; display_name?: string; avatar_url?: string | null }
 
 function normalizeHashtags(value: unknown): string[] {
   if (!Array.isArray(value)) return []
@@ -18,36 +17,46 @@ function normalizeHashtags(value: unknown): string[] {
     .slice(0, 20)
 }
 
-function normalizeCoAuthors(value: unknown) {
-  if (!Array.isArray(value)) return []
-  return value
-    .filter((entry): entry is CoAuthorEntry => Boolean(entry) && typeof entry === "object")
-    .slice(0, 8)
-    .map((entry) => ({
-      id: entry.id,
-      username: entry.username,
-      display_name: entry.display_name || entry.username,
-      avatar_url: entry.avatar_url ?? null,
-      role: "Co-Author",
-    }))
-}
-
 function normalizeMediaUrls(value: unknown): string[] {
   if (!Array.isArray(value)) return []
-  return value.filter((url): url is string => typeof url === "string" && url.length > 0).slice(0, 4)
+  return value
+    .filter((candidate): candidate is string => typeof candidate === "string")
+    .map((candidate) => {
+      try {
+        const url = new URL(candidate)
+        return url.protocol === "https:" ? url.toString() : ""
+      } catch {
+        return ""
+      }
+    })
+    .filter(Boolean)
+    .slice(0, 4)
 }
 
 /** Confirm the caller owns or co-authors the session before letting them write history. */
-async function canWriteToSession(supabase: any, sessionId: string, userId: string) {
-  const { data: session } = await supabase
+async function getSessionAccess(supabase: any, sessionId: string, userId: string) {
+  const { data: session, error } = await supabase
     .from("co_loop_sessions")
-    .select("owner_id, co_authors")
+    .select("owner_id, co_authors, deleted_at, status")
     .eq("session_id", sessionId)
     .maybeSingle()
+  if (error || !session || session.deleted_at) return { canRead: false, canWrite: false }
+  const revocation = await checkCoLoopInvitationRevocation(supabase, sessionId, userId)
+  if (revocation.error || revocation.revoked) return { canRead: false, canWrite: false }
 
-  if (!session) return true // session record not written yet; the owner creates it on first sync
-  if (session.owner_id === userId) return true
-  return (Array.isArray(session.co_authors) ? session.co_authors : []).some((c: any) => c?.id === userId)
+  const inRoster = session.owner_id === userId || (Array.isArray(session.co_authors) ? session.co_authors : []).some((entry: any) => entry?.id === userId)
+  let isOpenParticipant = false
+  if (!inRoster) {
+    const { data: openJoin, error: participantError } = await supabase
+      .from("open_co_loop_participants")
+      .select("id")
+      .eq("session_id", sessionId)
+      .eq("user_id", userId)
+      .maybeSingle()
+    isOpenParticipant = !participantError && Boolean(openJoin)
+  }
+  const canRead = inRoster || isOpenParticipant
+  return { canRead, canWrite: canRead && session.status === "active" }
 }
 
 /**
@@ -56,6 +65,9 @@ async function canWriteToSession(supabase: any, sessionId: string, userId: strin
  */
 export async function GET(request: NextRequest) {
   try {
+    const user = await getUserFromRequest(request)
+    if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
+
     const { searchParams } = new URL(request.url)
     const sessionId = searchParams.get("session_id") || searchParams.get("session")
     if (!sessionId) {
@@ -63,6 +75,8 @@ export async function GET(request: NextRequest) {
     }
 
     const supabase = createServerClient()
+    const access = await getSessionAccess(supabase, sessionId, user.id)
+    if (!access.canRead) return NextResponse.json({ error: "You are not a participant in this Co-Loop" }, { status: 403 })
     const { data, error } = await supabase
       .from("co_loop_versions")
       .select("*")
@@ -90,77 +104,68 @@ export async function POST(request: NextRequest) {
     const user = await getUserFromRequest(request)
     if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
 
-    const supabase = createServerClient()
-    const body = await request.json()
-
+    const body = await request.json().catch(() => null)
+    if (!body || typeof body !== "object" || Array.isArray(body)) {
+      return NextResponse.json({ error: "Invalid snapshot payload" }, { status: 400 })
+    }
     const sessionId = body.session_id || body.sessionId
-    if (!sessionId || typeof sessionId !== "string") {
+    if (!sessionId || typeof sessionId !== "string" || !sessionId.trim() || sessionId.length > 160) {
       return NextResponse.json({ error: "session_id is required" }, { status: 400 })
     }
 
-    if (!(await canWriteToSession(supabase, sessionId, user.id))) {
+    const supabase = createServerClient()
+    if (!(await getSessionAccess(supabase, sessionId, user.id)).canWrite) {
       return NextResponse.json({ error: "You are not a collaborator on this Co-Loop" }, { status: 403 })
     }
 
-    const content = typeof body.content === "string" ? body.content.slice(0, MAX_CONTENT) : ""
-    const title = typeof body.title === "string" ? body.title.slice(0, 300) : ""
+    const content = typeof body.content === "string" ? body.content.trimEnd() : ""
+    const title = typeof body.title === "string" ? body.title.trim() : ""
     if (!content.trim() && !title.trim()) {
       return NextResponse.json({ error: "Nothing to snapshot yet" }, { status: 400 })
     }
+    if (content.length > MAX_CONTENT || title.length > 300) {
+      return NextResponse.json({ error: "Snapshot content is too large" }, { status: 400 })
+    }
 
-    const { data: profile } = await supabase
-      .from("profiles")
-      .select("id, username, display_name, avatar_url")
-      .eq("id", user.id)
-      .maybeSingle()
-
-    // Allocate the next version number server-side so two collaborators
-    // snapshotting at the same moment cannot collide on the unique key.
-    const { data: latest } = await supabase
-      .from("co_loop_versions")
-      .select("version_number")
-      .eq("session_id", sessionId)
-      .order("version_number", { ascending: false })
-      .limit(1)
-      .maybeSingle()
-
-    const versionNumber = Number(latest?.version_number || 0) + 1
     const mediaUrls = normalizeMediaUrls(body.media_urls)
+    const providedMediaUrl = typeof body.media_url === "string" && body.media_url.trim()
+      ? normalizeMediaUrls([body.media_url])[0] || null
+      : null
+    if (typeof body.media_url === "string" && body.media_url.trim() && !providedMediaUrl) {
+      return NextResponse.json({ error: "Media URLs must use HTTPS" }, { status: 400 })
+    }
     const mediaType = ["text", "image", "video"].includes(body.media_type) ? body.media_type : "text"
+    const label = typeof body.label === "string" ? body.label.trim().slice(0, 120) : null
 
-    const { data: inserted, error: insertError } = await supabase
-      .from("co_loop_versions")
-      .insert({
-        session_id: sessionId,
-        version_number: versionNumber,
-        title,
-        content,
-        hashtags: normalizeHashtags(body.hashtags),
-        media_url: typeof body.media_url === "string" && body.media_url ? body.media_url : mediaUrls[0] || null,
-        media_urls: mediaUrls,
-        media_type: mediaType,
-        co_authors: normalizeCoAuthors(body.co_authors),
-        label:
-          typeof body.label === "string" && body.label.trim()
-            ? body.label.trim().slice(0, 120)
-            : versionNumber === 1
-              ? "Initial Draft"
-              : `Checkpoint #${versionNumber}`,
-        saved_by_id: user.id,
-        saved_by_name: profile?.display_name || profile?.username || user.email?.split("@")[0] || "Collaborator",
-        saved_by_avatar: profile?.avatar_url || null,
-      })
-      .select("*")
-      .single()
+    const { data: inserted, error: insertError } = await supabase.rpc("create_co_loop_version", {
+      p_session_id: sessionId,
+      p_actor_id: user.id,
+      p_title: title,
+      p_content: content,
+      p_hashtags: normalizeHashtags(body.hashtags),
+      p_media_url: providedMediaUrl || mediaUrls[0] || null,
+      p_media_urls: mediaUrls,
+      p_media_type: mediaType,
+      p_label: label,
+    })
 
     if (insertError) {
-      console.error("co_loop_versions insert failed:", insertError)
+      console.error("Atomic Co-Loop version snapshot failed:", insertError.message)
+      if (/co_loop_locked|co_loop_inactive/.test(insertError.message)) {
+        return NextResponse.json({ error: "This room is locked or no longer accepting snapshots" }, { status: 409 })
+      }
+      if (/co_loop_participant_required/.test(insertError.message)) {
+        return NextResponse.json({ error: "You are no longer a collaborator on this Co-Loop" }, { status: 403 })
+      }
+      if (/co_loop_unavailable/.test(insertError.message)) {
+        return NextResponse.json({ error: "This Co-Loop is unavailable" }, { status: 404 })
+      }
       return NextResponse.json({ error: "Could not save this snapshot" }, { status: 500 })
     }
 
     return NextResponse.json({ success: true, version: inserted })
-  } catch (error: any) {
+  } catch (error) {
     console.error("Co-Loop versions POST error:", error)
-    return NextResponse.json({ error: error?.message || "Internal server error" }, { status: 500 })
+    return NextResponse.json({ error: "Could not save this snapshot" }, { status: 500 })
   }
 }

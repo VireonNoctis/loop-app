@@ -39,6 +39,7 @@ export interface Database {
           theme_data: Json | null
           privacy_settings: Json | null
           notification_settings: Json | null
+          discovery_preferences: Json
           followers_count: number
           following_count: number
           loops_count: number
@@ -72,6 +73,7 @@ export interface Database {
           theme_data?: Json | null
           privacy_settings?: Json | null
           notification_settings?: Json | null
+          discovery_preferences?: Json
           followers_count?: number
           following_count?: number
           loops_count?: number
@@ -105,6 +107,7 @@ export interface Database {
           theme_data?: Json | null
           privacy_settings?: Json | null
           notification_settings?: Json | null
+          discovery_preferences?: Json
           followers_count?: number
           following_count?: number
           loops_count?: number
@@ -961,6 +964,111 @@ export interface Database {
           branches_count: number
           trend_score: number
         }[]
+      }
+      kick_co_loop_participant: {
+        Args: {
+          p_session_id: string
+          p_owner_id: string
+          p_target_user_id: string
+        }
+        Returns: Json
+      }
+      respond_co_loop_invitation: {
+        Args: {
+          p_session_id: string
+          p_invitee_id: string
+          p_action: string
+        }
+        Returns: Json
+      }
+      create_co_loop_invitation: {
+        Args: {
+          p_session_id: string
+          p_inviter_id: string
+          p_invitee_id: string
+        }
+        Returns: Json
+      }
+      set_circle_event_rsvp_authorized: {
+        Args: {
+          p_event_id: string
+          p_user_id: string
+          p_actor_id: string
+          p_status: string
+        }
+        Returns: Json
+      }
+      purchase_premium_with_coins: {
+        Args: {
+          p_user_id: string
+          p_plan_type: string
+          p_transaction_id: string
+        }
+        Returns: Json
+      }
+      review_verification_request: {
+        Args: {
+          p_request_id: string
+          p_reviewer_id: string
+          p_action: string
+          p_admin_notes?: string | null
+        }
+        Returns: Json
+      }
+      submit_verification_appeal: {
+        Args: {
+          p_request_id: string
+          p_user_id: string
+          p_reason: string
+          p_evidence_url?: string | null
+        }
+        Returns: Json
+      }
+      review_verification_appeal: {
+        Args: {
+          p_appeal_id: string
+          p_reviewer_id: string
+          p_action: string
+          p_rejection_reason?: string | null
+          p_admin_notes?: string | null
+        }
+        Returns: Json
+      }
+      review_content_flag: {
+        Args: {
+          p_flag_id: string
+          p_moderator_id: string
+          p_status: string
+          p_action_taken?: string
+          p_moderator_notes?: string | null
+        }
+        Returns: Json
+      }
+      review_ban_appeal: {
+        Args: {
+          p_appeal_id: string
+          p_reviewer_id: string
+          p_decision: string
+          p_admin_notes?: string | null
+        }
+        Returns: Json
+      }
+      join_circle: {
+        Args: {
+          p_circle_id: string
+          p_user_id: string
+        }
+        Returns: Json
+      }
+      review_circle_join_request: {
+        Args: {
+          p_circle_id: string
+          p_member_id: string
+          p_actor_id: string
+          p_action: string
+          p_role?: string
+        }
+        Returns: Json
       }
     }
     Enums: {

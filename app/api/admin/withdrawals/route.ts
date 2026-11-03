@@ -34,73 +34,73 @@ export async function GET(request: NextRequest) {
 export async function PATCH(request: NextRequest) {
   const { user, response } = await requireAdmin(request)
   if (response) return response
+  if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
 
-  const supabase = createServerClient()
   const body = await request.json().catch(() => ({}))
-  const { id, status, admin_note } = body
+  const id = typeof body.id === "string" ? body.id : ""
+  const status = typeof body.status === "string" ? body.status : ""
+  const adminNote = typeof body.admin_note === "string" ? body.admin_note.trim() : null
 
-  if (!id || !status || !VALID_STATUSES.includes(status)) {
+  if (!id || !["approved", "paid", "rejected"].includes(status)) {
     return NextResponse.json(
-      { error: `id and a valid status (${VALID_STATUSES.join(", ")}) are required` },
+      { error: "id and a valid transition (approved, paid, rejected) are required" },
       { status: 400 },
     )
   }
-
-  const { data: existing, error: fetchError } = await supabase
-    .from("withdrawal_requests")
-    .select("*")
-    .eq("id", id)
-    .maybeSingle()
-
-  if (fetchError || !existing) {
-    return NextResponse.json({ error: "Withdrawal request not found" }, { status: 404 })
+  if (adminNote && adminNote.length > 1000) {
+    return NextResponse.json({ error: "Admin note must be 1,000 characters or fewer." }, { status: 400 })
   }
 
-  // Rejecting refunds the reserved coins back to the creator — they were
-  // never actually removed from circulation, just held pending payout.
-  if (status === "rejected" && existing.status !== "rejected") {
-    const { data: profile } = await supabase
-      .from("profiles")
-      .select("loop_coins")
-      .eq("id", existing.user_id)
-      .maybeSingle()
-    await supabase
-      .from("profiles")
-      .update({
-        loop_coins: Number(profile?.loop_coins || 0) + Number(existing.coins_amount || 0),
-        updated_at: new Date().toISOString(),
-      })
-      .eq("id", existing.user_id)
+  const supabase = createServerClient()
+  const { data, error } = await supabase.rpc("review_coin_withdrawal", {
+    p_admin_id: user.id,
+    p_withdrawal_id: id,
+    p_status: status,
+    p_admin_note: adminNote,
+  })
+
+  if (error) {
+    console.error("Atomic payout review failed:", error)
+    if (error.code === "42501") {
+      return NextResponse.json({ error: "Administrator access is required." }, { status: 403 })
+    }
+    if (error.code === "P0002") {
+      return NextResponse.json({ error: "Withdrawal request or owner profile not found." }, { status: 404 })
+    }
+    if (error.code === "55000") {
+      return NextResponse.json({ error: error.message || "This payout can no longer be changed." }, { status: 409 })
+    }
+    if (error.code === "22023") {
+      return NextResponse.json({ error: error.message || "Invalid payout review request." }, { status: 400 })
+    }
+    if (["42883", "42P01", "42703"].includes(error.code || "")) {
+      return NextResponse.json({ error: "Secure payout review is unavailable until the wallet migration has been applied." }, { status: 503 })
+    }
+    return NextResponse.json({ error: "Could not update withdrawal request." }, { status: 500 })
   }
 
-  const { data: updated, error: updateError } = await supabase
-    .from("withdrawal_requests")
-    .update({
-      status,
-      admin_note: admin_note || null,
-      reviewed_at: new Date().toISOString(),
-      reviewed_by: user.id,
-    })
-    .eq("id", id)
-    .select()
-    .single()
-
-  if (updateError) {
-    // admin_note/reviewed_at/reviewed_by columns may not exist on older schemas — retry with just status
-    const { data: fallbackUpdated, error: fallbackError } = await supabase
-      .from("withdrawal_requests")
-      .update({ status })
-      .eq("id", id)
-      .select()
-      .single()
-    if (fallbackError) return NextResponse.json({ error: fallbackError.message }, { status: 500 })
-
-    await notifyStatusChange(supabase, fallbackUpdated)
-    return NextResponse.json({ success: true, request: fallbackUpdated })
+  const result = (Array.isArray(data) ? data[0] : data) as {
+    request?: Record<string, unknown>
+    already_processed?: boolean
+  } | null
+  if (!result?.request || typeof result.request.status !== "string" || result.request.id !== id) {
+    return NextResponse.json({ error: "Payout review returned an invalid result." }, { status: 500 })
   }
 
-  await notifyStatusChange(supabase, updated)
-  return NextResponse.json({ success: true, request: updated })
+  if (!result.already_processed) {
+    try {
+      await notifyStatusChange(supabase, result.request)
+    } catch (notificationError) {
+      // The status transition and any refund are already committed.
+      console.error("Could not send payout status notification:", notificationError)
+    }
+  }
+
+  return NextResponse.json({
+    success: true,
+    request: result.request,
+    already_processed: Boolean(result.already_processed),
+  })
 }
 
 async function notifyStatusChange(supabase: any, request: any) {

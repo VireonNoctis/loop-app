@@ -16,14 +16,27 @@ import { ScreenshotDetector } from "@/components/media-protection"
 export function AppChrome({ children }: { children: React.ReactNode }) {
   const pathname = usePathname()
   const isMessagesPage = pathname === "/messages" || pathname.startsWith("/messages/")
+  const isLegalDocumentPage = pathname === "/terms" || pathname === "/privacy"
+  const isStandalonePage = [
+    "/login",
+    "/signup",
+    "/onboarding",
+    "/landing",
+    "/reset-password",
+    "/verify-email",
+    "/email-confirmed",
+    "/terms",
+    "/privacy",
+    "/legal/consent",
+  ].some((route) => pathname === route || pathname.startsWith(`${route}/`))
 
   return (
     <>
-      <div className={`flex-1 min-w-0 ${isMessagesPage ? "pb-0" : "pb-20 lg:pb-0"}`}>
-        {!isMessagesPage && <AppUpdateBanner />}
+      <div className={`loop-app-content flex-1 min-w-0 ${isMessagesPage || isStandalonePage ? "pb-0" : "pb-[calc(5rem+env(safe-area-inset-bottom))] lg:pb-0"} ${isLegalDocumentPage ? "legal-page-shell" : ""}`}>
+        {!isMessagesPage && !isStandalonePage && <AppUpdateBanner />}
         {children}
       </div>
-      {!isMessagesPage && <MobileBottomNav />}
+      {!isMessagesPage && !isStandalonePage && <MobileBottomNav />}
       <ScreenshotDetector />
     </>
   )

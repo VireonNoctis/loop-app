@@ -9,6 +9,8 @@ import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSepara
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Bell, Check, Settings, Heart, MessageCircle, UserPlus, GitBranch, AtSign, Gift, Mail, BellRing, ChevronRight, Lock, Coins, Megaphone, Radio, Phone, Trophy, Users, Crown, Info, Swords, ShieldCheck, Zap, Quote } from "lucide-react"
 import { NotificationQuickReply } from "@/components/notifications/notification-quick-reply";
+import { AnimatedIconView } from "@/components/icons/animated/animated-icon-view";
+import FilledBellIcon from "@/components/icons/animated/filled-bell-icon";
 import { getNotificationCopy, SYSTEM_SENDER } from "@/lib/notification-copy";
 import { useAuth } from "@/hooks/use-auth";
 import { useToast } from "@/hooks/use-toast";
@@ -17,6 +19,7 @@ import { CoLoopInviteCard } from "@/components/invitations/co-loop-invite-card";
 import { supabase } from "@/lib/supabase";
 import { Spinner } from "@/components/ui/skeletons"
 import { VerifiedSeal } from "@/components/ui/verified-seal"
+import { isRustApiUnavailable, rustApiRequest } from "@/lib/rust-api"
 
 interface Actor {
   id: string
@@ -35,6 +38,8 @@ interface Notification {
   is_read: boolean
   created_at: string
   updated_at?: string
+  action_url?: string | null
+  actor_name?: string | null
   actor?: Actor | null
   actors?: Actor[]
   count?: number
@@ -117,14 +122,34 @@ export function NotificationDropdown() {
     if (!user) return
     if (!opts?.silent) setLoading(true)
     try {
-      const response = await fetch("/api/notifications?limit=20", {
-        headers: { ...getAuthHeader() },
-        cache: "no-store",
-      })
-      const data = await response.json()
+      let data: {
+        success?: boolean
+        notifications?: Notification[]
+        unread_count?: number
+      }
+      try {
+        data = await rustApiRequest<{ success?: boolean; notifications?: Notification[]; unread_count?: number }>("notifications?limit=20", {
+          headers: getAuthHeader(),
+          cache: "no-store",
+        })
+      } catch (error) {
+        if (!isRustApiUnavailable(error)) throw error
+        // Compatibility while the Rust service is rolled out to production.
+        const response = await fetch("/api/notifications?limit=20", {
+          headers: { ...getAuthHeader() },
+          cache: "no-store",
+        })
+        if (!response.ok) throw new Error("Could not fetch notifications")
+        data = await response.json()
+      }
       if (data.success) {
-        setNotifications(data.notifications || [])
-        setUnreadCount((data.notifications || []).filter((n: Notification) => !n.is_read).length)
+        const nextNotifications = data.notifications || []
+        setNotifications(nextNotifications)
+        setUnreadCount(
+          typeof data.unread_count === "number"
+            ? data.unread_count
+            : nextNotifications.filter((notification) => !notification.is_read).length,
+        )
       }
     } catch (error) {
       console.error("Error fetching notifications:", error)
@@ -179,17 +204,25 @@ export function NotificationDropdown() {
   const markAsRead = async (notificationId: string) => {
     if (!user) return
     try {
-      const response = await fetch("/api/notifications", {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json", ...getAuthHeader() },
-        body: JSON.stringify({ notification_ids: [notificationId] }),
-      })
-      if (response.ok) {
-        setNotifications((prev) => prev.map((n) => (n.id === notificationId ? { ...n, is_read: true } : n)))
-        setUnreadCount((prev) => Math.max(0, prev - 1))
-        // Tell the tab-bar badge so it drops without waiting for its poll.
-        window.dispatchEvent(new CustomEvent("loop:notifications-changed"))
+      try {
+        await rustApiRequest("notifications/read", {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json", ...getAuthHeader() },
+          body: JSON.stringify({ notification_ids: [notificationId] }),
+        })
+      } catch (error) {
+        if (!isRustApiUnavailable(error)) throw error
+        const response = await fetch("/api/notifications", {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json", ...getAuthHeader() },
+          body: JSON.stringify({ notification_ids: [notificationId] }),
+        })
+        if (!response.ok) throw new Error("Could not mark notification as read")
       }
+      setNotifications((prev) => prev.map((n) => (n.id === notificationId ? { ...n, is_read: true } : n)))
+      setUnreadCount((prev) => Math.max(0, prev - 1))
+      // Tell the tab-bar badge so it drops without waiting for its poll.
+      window.dispatchEvent(new CustomEvent("loop:notifications-changed"))
     } catch (error) {
       console.error("Error marking notification as read:", error)
     }
@@ -198,17 +231,25 @@ export function NotificationDropdown() {
   const markAllAsRead = async () => {
     if (!user) return
     try {
-      const response = await fetch("/api/notifications", {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json", ...getAuthHeader() },
-        body: JSON.stringify({ mark_all_read: true }),
-      })
-      if (response.ok) {
-        setNotifications((prev) => prev.map((n) => ({ ...n, is_read: true })))
-        setUnreadCount(0)
-        window.dispatchEvent(new CustomEvent("loop:notifications-changed"))
-        toast({ title: "Success", description: "All notifications marked as read" })
+      try {
+        await rustApiRequest("notifications/read", {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json", ...getAuthHeader() },
+          body: JSON.stringify({ mark_all_read: true }),
+        })
+      } catch (error) {
+        if (!isRustApiUnavailable(error)) throw error
+        const response = await fetch("/api/notifications", {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json", ...getAuthHeader() },
+          body: JSON.stringify({ mark_all_read: true }),
+        })
+        if (!response.ok) throw new Error("Could not mark notifications as read")
       }
+      setNotifications((prev) => prev.map((n) => ({ ...n, is_read: true })))
+      setUnreadCount(0)
+      window.dispatchEvent(new CustomEvent("loop:notifications-changed"))
+      toast({ title: "Success", description: "All notifications marked as read" })
     } catch (error) {
       console.error("Error marking all notifications as read:", error)
     }
@@ -219,6 +260,7 @@ export function NotificationDropdown() {
     if (data.href) return data.href
     if (data.action_url) return data.action_url
     if (data.url) return data.url
+    if (n.action_url) return n.action_url
     if (data.conversation_id) return `/messages?c=${data.conversation_id}`
     if (data.loop_id) return `/loop/${data.loop_id}`
     if (data.circle_id) return `/communities/${data.circle_id}`
@@ -238,7 +280,7 @@ export function NotificationDropdown() {
           type="button"
           className="relative flex items-center justify-center h-9 w-9 rounded-full hover:bg-muted/60 transition-colors"
         >
-          <Bell className="h-[18px] w-[18px] text-muted-foreground" />
+          <AnimatedIconView component={FilledBellIcon} size={18} className="text-muted-foreground" />
           {unreadCount > 0 && (
             <span className="absolute -top-0.5 -right-0.5 flex h-4 min-w-4 items-center justify-center rounded-full bg-primary px-1 text-[9px] font-bold text-primary-foreground ring-2 ring-background">
               {unreadCount > 99 ? "99+" : unreadCount}
@@ -332,9 +374,11 @@ export function NotificationDropdown() {
                       return (
                         <div key={notification.id} className="px-3 py-2">
                           <CoLoopInviteCard
+                            inviteId={notification.data?.invitation_id}
                             sessionId={inviteSessionId}
                             inviterName={inviterDisplayName}
                             createdAt={notification.created_at}
+                            expiresAt={notification.data?.invitation_expires_at}
                           />
                         </div>
                       )

@@ -1,29 +1,76 @@
-import { type NextRequest, NextResponse } from "next/server";
-import { createClient } from "@/lib/supabase";
-import { checkCirclePrivateAccess } from "@/lib/circle-access";
-import { getUserFromRequest } from "@/lib/server-auth";
+import { type NextRequest, NextResponse } from "next/server"
+import { createServerClient } from "@/lib/supabase"
+import { checkCirclePrivateAccess } from "@/lib/circle-access"
+import { getUserFromRequest } from "@/lib/server-auth"
+import { CIRCLE_EVENT_TYPES, normalizeCircleEventInput } from "@/lib/circle-events"
 
-const supabase = createClient(process.env.NEXT_PUBLIC_SUPABASE_URL || "https://placeholder.supabase.co", process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || "placeholder")
+export const dynamic = "force-dynamic"
 
+function getSupabase() {
+  if (!process.env.SUPABASE_SERVICE_ROLE_KEY) {
+    throw new Error("SUPABASE_SERVICE_ROLE_KEY is required for Circle event access")
+  }
+  return createServerClient()
+}
 
-// Get circle events
-export async function GET(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+type CircleMember = {
+  role: string | null
+  permissions: Record<string, unknown> | null
+}
+
+function canManageEvents(member: CircleMember | null | undefined) {
+  return Boolean(
+    member && (
+      ["owner", "admin", "moderator"].includes(String(member.role))
+      || member.permissions?.can_manage_events === true
+    ),
+  )
+}
+
+async function getActiveMember(circleId: string, userId: string) {
+  return getSupabase()
+    .from("circle_members")
+    .select("role, permissions, status")
+    .eq("circle_id", circleId)
+    .eq("user_id", userId)
+    .in("status", ["active", "approved"])
+    .maybeSingle()
+}
+
+function parsePagination(searchParams: URLSearchParams) {
+  const rawLimit = Number(searchParams.get("limit") ?? 50)
+  const rawOffset = Number(searchParams.get("offset") ?? 0)
+  const limit = Number.isFinite(rawLimit) ? Math.min(50, Math.max(1, Math.trunc(rawLimit))) : 50
+  const offset = Number.isFinite(rawOffset) ? Math.max(0, Math.trunc(rawOffset)) : 0
+  return { limit, offset }
+}
+
+// List Circle events. Private Circle events are never disclosed to outsiders.
+export async function GET(
+  request: NextRequest,
+  { params }: { params: Promise<{ id: string }> },
+) {
   try {
-    const { searchParams } = new URL(request.url)
-    const limit = Number.parseInt(searchParams.get("limit") || "50")
-    const offset = Number.parseInt(searchParams.get("offset") || "0")
-    const status = searchParams.get("status") // upcoming, past, ongoing
-    const type = searchParams.get("type") // discussion, voice_chat, screen_share, game
-
     const { id: circleId } = await params
+    const { searchParams } = new URL(request.url)
+    const { limit, offset } = parsePagination(searchParams)
+    const status = searchParams.get("status")
+    const type = searchParams.get("type")
 
-    // Private circles: events are only visible to approved members/owner.
-    const access = await checkCirclePrivateAccess(circleId, request.headers.get("authorization"))
-    if (access.isPrivate && !access.canView) {
-      return NextResponse.json({ success: true, events: [], hasMore: false, locked: true })
+    if (status && !["upcoming", "past", "ongoing"].includes(status)) {
+      return NextResponse.json({ error: "Unsupported event status filter" }, { status: 400 })
+    }
+    if (type && !CIRCLE_EVENT_TYPES.includes(type as (typeof CIRCLE_EVENT_TYPES)[number])) {
+      return NextResponse.json({ error: "Unsupported event type filter" }, { status: 400 })
     }
 
-    let query = supabase
+    const access = await checkCirclePrivateAccess(circleId, request.headers.get("authorization"))
+    if (access.isPrivate && !access.canView) {
+      return NextResponse.json({ success: true, events: [], can_manage_events: false, hasMore: false, locked: true })
+    }
+
+    const now = new Date().toISOString()
+    let query = getSupabase()
       .from("circle_events")
       .select(`
         *,
@@ -33,133 +80,99 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
       .order("starts_at", { ascending: true })
       .range(offset, offset + limit - 1)
 
-    // Filter by status
-    const now = new Date().toISOString()
-    if (status === "upcoming") {
-      query = query.gte("starts_at", now)
-    } else if (status === "past") {
-      query = query.lt("ends_at", now)
-    } else if (status === "ongoing") {
-      query = query.lte("starts_at", now).gte("ends_at", now)
+    if (status === "upcoming") query = query.gte("starts_at", now)
+    if (status === "past") query = query.not("ends_at", "is", null).lt("ends_at", now)
+    if (status === "ongoing") {
+      query = query.lte("starts_at", now).or(`ends_at.is.null,ends_at.gte.${now}`)
     }
-
-    if (type) {
-      query = query.eq("event_type", type)
-    }
+    if (type) query = query.eq("event_type", type)
 
     const { data: events, error } = await query
-
     if (error) {
-      console.error("Database error:", error)
-      return NextResponse.json({ error: "Failed to fetch events" }, { status: 500 })
+      console.error("Circle event list query failed:", error)
+      return NextResponse.json({ error: "Could not load Circle events" }, { status: 500 })
     }
 
-    // Tell the client which of these the viewer has already RSVP'd to, so the
-    // Events tab doesn't need one participants request per card.
     const viewer = await getUserFromRequest(request)
-    const attending = new Set<string>()
-    if (viewer && events && events.length > 0) {
-      const { data: rows } = await supabase
-        .from("circle_event_participants")
-        .select("event_id")
-        .eq("user_id", viewer.id)
-        .in("event_id", events.map((e: any) => e.id))
-      for (const row of rows || []) attending.add(String((row as any).event_id))
+    const rsvpStatuses = new Map<string, string>()
+    let canManage = false
+
+    if (viewer) {
+      if (events?.length) {
+        const { data: rows, error: rsvpError } = await getSupabase()
+          .from("circle_event_participants")
+          .select("event_id, status")
+          .eq("user_id", viewer.id)
+          .in("event_id", events.map((event: { id: string }) => event.id))
+
+        if (rsvpError) {
+          console.error("Circle event RSVP lookup failed:", rsvpError)
+          return NextResponse.json({ error: "Could not load your event RSVPs" }, { status: 500 })
+        }
+        for (const row of rows || []) rsvpStatuses.set(String(row.event_id), String(row.status))
+      }
+
+      const { data: member, error: memberError } = await getActiveMember(circleId, viewer.id)
+      if (memberError) {
+        console.error("Circle event permission lookup failed:", memberError)
+        return NextResponse.json({ error: "Could not verify Circle permissions" }, { status: 500 })
+      }
+      canManage = canManageEvents(member)
     }
 
     return NextResponse.json({
       success: true,
-      events: (events || []).map((e: any) => ({ ...e, is_attending: attending.has(String(e.id)) })),
-      hasMore: events?.length === limit,
+      events: (events || []).map((event: { id: string }) => {
+        const rsvpStatus = rsvpStatuses.get(String(event.id)) || null
+        return {
+          ...event,
+          rsvp_status: rsvpStatus,
+          is_attending: rsvpStatus === "attending",
+          is_pending: rsvpStatus === "pending",
+        }
+      }),
+      can_manage_events: canManage,
+      hasMore: (events?.length || 0) === limit,
     })
   } catch (error) {
-    console.error("Error fetching circle events:", error)
-    return NextResponse.json({ error: "Internal server error" }, { status: 500 })
+    console.error("Circle events GET error:", error)
+    return NextResponse.json({ error: "Could not load Circle events" }, { status: 500 })
   }
 }
 
-// Create a new event
-export async function POST(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+// Create events only for approved, active Circle members who hold the
+// event-management capability. Input is normalized before it reaches SQL.
+export async function POST(
+  request: NextRequest,
+  { params }: { params: Promise<{ id: string }> },
+) {
   try {
-
     const user = await getUserFromRequest(request)
-
-    if (!user) {
-      return NextResponse.json({ error: "Invalid token" }, { status: 401 })
-    }
+    if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
 
     const { id: circleId } = await params
-    const { 
-      title, 
-      description, 
-      event_type, 
-      starts_at, 
-      ends_at, 
-      max_participants,
-      is_recurring,
-      recurrence_pattern,
-      location,
-      event_link,
-      tags,
-      requires_approval,
-    } = await request.json()
+    const body = await request.json().catch(() => null)
+    const normalized = normalizeCircleEventInput(body)
+    if (!normalized.ok) return NextResponse.json({ error: normalized.error }, { status: 400 })
 
-    // Check if user has permission to create events — a fixed admin/mod
-    // role, or a member an admin explicitly granted can_manage_events to
-    // (custom role permission, without making them a full moderator).
-    const { data: member } = await supabase
-      .from("circle_members")
-      .select("role, permissions")
-      .eq("circle_id", circleId)
-      .eq("user_id", user.id)
-      .maybeSingle()
-
-    const canManageEvents =
-      member && (["owner", "admin", "moderator"].includes(member.role) || member.permissions?.can_manage_events)
-
-    if (!canManageEvents) {
-      return NextResponse.json({ error: "Insufficient permissions to create events" }, { status: 403 })
+    const { data: member, error: memberError } = await getActiveMember(circleId, user.id)
+    if (memberError) return NextResponse.json({ error: "Could not verify Circle membership" }, { status: 500 })
+    if (!member) return NextResponse.json({ error: "Join this Circle before creating events" }, { status: 403 })
+    if (!canManageEvents(member)) {
+      return NextResponse.json({ error: "You cannot create events in this Circle" }, { status: 403 })
     }
 
-    // Validate required fields
-    if (!title?.trim()) {
-      return NextResponse.json({ error: "Event title is required" }, { status: 400 })
-    }
-
-    if (!starts_at) {
-      return NextResponse.json({ error: "Start time is required" }, { status: 400 })
-    }
-
-    // Validate event type
-    const validTypes = ["discussion", "voice_chat", "screen_share", "game"]
-    if (!event_type || !validTypes.includes(event_type)) {
-      return NextResponse.json({ error: "Invalid event type" }, { status: 400 })
-    }
-
-    // Validate date range
-    if (ends_at && new Date(starts_at) >= new Date(ends_at)) {
-      return NextResponse.json({ error: "End time must be after start time" }, { status: 400 })
-    }
-
-    // Create event
-    const { data: event, error: insertError } = await supabase
+    const { value } = normalized
+    const { data: event, error } = await getSupabase()
       .from("circle_events")
       .insert({
         circle_id: circleId,
         organizer_id: user.id,
-        title: title.trim(),
-        description: description?.trim() || "",
-        event_type,
-        starts_at,
-        ends_at,
-        max_participants: max_participants || 50,
-        is_recurring: is_recurring || false,
-        recurrence_pattern: recurrence_pattern || null,
-        location: location?.trim() || null,
-        event_link: event_link?.trim() || null,
-        tags: Array.isArray(tags) ? tags : [],
-        requires_approval: Boolean(requires_approval),
-        created_at: new Date().toISOString()
+        ...value,
+        is_recurring: false,
+        recurrence_pattern: null,
+        participant_count: 0,
+        created_at: new Date().toISOString(),
       })
       .select(`
         *,
@@ -167,97 +180,82 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
       `)
       .single()
 
-    if (insertError) {
-      console.error("Database insert error:", insertError)
-      return NextResponse.json({ error: "Failed to create event" }, { status: 500 })
+    if (error) {
+      console.error("Circle event create failed:", error)
+      return NextResponse.json({ error: "Could not create this event" }, { status: 500 })
     }
 
     try {
-      await supabase.channel(`circle-admin:${circleId}`).send({
+      await getSupabase().channel(`circle-admin:${circleId}`).send({
         type: "broadcast",
         event: "admin_refresh",
         payload: { action: "create_event", eventId: event.id },
       })
     } catch {
-      /* ignore */
+      // Realtime is an enhancement; a successful database write is authoritative.
     }
 
-    return NextResponse.json({
-      success: true,
-      event,
-      message: "Event created successfully"
-    })
+    return NextResponse.json({ success: true, event, message: "Event created successfully" }, { status: 201 })
   } catch (error) {
-    console.error("Error creating circle event:", error)
-    return NextResponse.json({ error: "Internal server error" }, { status: 500 })
+    console.error("Circle events POST error:", error)
+    return NextResponse.json({ error: "Could not create this event" }, { status: 500 })
   }
 }
 
-// Update an event
-export async function PUT(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+// Update an event. The route accepts partial payloads but validates the
+// resulting complete event record, including date order and HTTPS links.
+export async function PUT(
+  request: NextRequest,
+  { params }: { params: Promise<{ id: string }> },
+) {
   try {
-
     const user = await getUserFromRequest(request)
-
-    if (!user) {
-      return NextResponse.json({ error: "Invalid token" }, { status: 401 })
-    }
+    if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
 
     const { id: circleId } = await params
-    const { 
-      eventId, 
-      title, 
-      description, 
-      event_type, 
-      starts_at, 
-      ends_at, 
-      max_participants,
-      is_recurring,
-      recurrence_pattern
-    } = await request.json()
-
-    // Check if event exists and user has permission to update it
-    const { data: event } = await supabase
-      .from("circle_events")
-      .select("organizer_id")
-      .eq("id", eventId)
-      .eq("circle_id", circleId)
-      .single()
-
-    if (!event) {
-      return NextResponse.json({ error: "Event not found" }, { status: 404 })
+    const body = await request.json().catch(() => null)
+    if (!body || typeof body !== "object" || typeof body.eventId !== "string" || !body.eventId) {
+      return NextResponse.json({ error: "An eventId is required" }, { status: 400 })
     }
 
-    // Check if user is the organizer or has admin permissions
-    const { data: member } = await supabase
-      .from("circle_members")
-      .select("role")
-      .eq("circle_id", circleId)
-      .eq("user_id", user.id)
-      .in("role", ["owner", "admin"])
-      .single()
+    const [{ data: event, error: eventError }, { data: member, error: memberError }] = await Promise.all([
+      getSupabase()
+        .from("circle_events")
+        .select("*")
+        .eq("id", body.eventId)
+        .eq("circle_id", circleId)
+        .maybeSingle(),
+      getActiveMember(circleId, user.id),
+    ])
 
-    const isOrganizer = event.organizer_id === user.id
-    const isAdmin = !!member
-
-    if (!isOrganizer && !isAdmin) {
-      return NextResponse.json({ error: "Insufficient permissions to update event" }, { status: 403 })
+    if (eventError || memberError) {
+      return NextResponse.json({ error: "Could not verify event permissions" }, { status: 500 })
+    }
+    if (!event) return NextResponse.json({ error: "Event not found" }, { status: 404 })
+    if (!member) return NextResponse.json({ error: "Join this Circle before managing events" }, { status: 403 })
+    if (event.organizer_id !== user.id && !canManageEvents(member)) {
+      return NextResponse.json({ error: "You cannot edit this event" }, { status: 403 })
     }
 
-    // Update event
-    const { data: updatedEvent, error: updateError } = await supabase
+    const normalized = normalizeCircleEventInput({ ...event, ...body })
+    if (!normalized.ok) return NextResponse.json({ error: normalized.error }, { status: 400 })
+
+    const { count, error: countError } = await getSupabase()
+      .from("circle_event_participants")
+      .select("id", { count: "exact", head: true })
+      .eq("event_id", event.id)
+      .eq("status", "attending")
+
+    if (countError) return NextResponse.json({ error: "Could not verify attendee capacity" }, { status: 500 })
+    if (normalized.value.max_participants !== null && (count || 0) > normalized.value.max_participants) {
+      return NextResponse.json({ error: "The attendee limit is lower than the number already attending" }, { status: 409 })
+    }
+
+    const { data: updatedEvent, error: updateError } = await getSupabase()
       .from("circle_events")
-      .update({
-        title: title?.trim() || undefined,
-        description: description?.trim() || undefined,
-        event_type: event_type || undefined,
-        starts_at: starts_at || undefined,
-        ends_at: ends_at || undefined,
-        max_participants: typeof max_participants !== 'undefined' ? max_participants : undefined,
-        is_recurring: typeof is_recurring !== 'undefined' ? is_recurring : undefined,
-        recurrence_pattern: recurrence_pattern || undefined
-      })
-      .eq("id", eventId)
+      .update(normalized.value)
+      .eq("id", event.id)
+      .eq("circle_id", circleId)
       .select(`
         *,
         organizer:profiles!organizer_id(id, username, display_name, avatar_url, video_avatar_url, is_verified, is_premium)
@@ -265,94 +263,74 @@ export async function PUT(request: NextRequest, { params }: { params: Promise<{ 
       .single()
 
     if (updateError) {
-      console.error("Database update error:", updateError)
-      return NextResponse.json({ error: "Failed to update event" }, { status: 500 })
+      console.error("Circle event update failed:", updateError)
+      return NextResponse.json({ error: "Could not update this event" }, { status: 500 })
     }
 
-    return NextResponse.json({
-      success: true,
-      event: updatedEvent,
-      message: "Event updated successfully"
-    })
+    return NextResponse.json({ success: true, event: updatedEvent, message: "Event updated successfully" })
   } catch (error) {
-    console.error("Error updating circle event:", error)
-    return NextResponse.json({ error: "Internal server error" }, { status: 500 })
+    console.error("Circle events PUT error:", error)
+    return NextResponse.json({ error: "Could not update this event" }, { status: 500 })
   }
 }
 
-// Delete an event
-export async function DELETE(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+// Delete only the selected event in this Circle, and only by its organizer or
+// an active member with the event-management capability.
+export async function DELETE(
+  request: NextRequest,
+  { params }: { params: Promise<{ id: string }> },
+) {
   try {
-
     const user = await getUserFromRequest(request)
-
-    if (!user) {
-      return NextResponse.json({ error: "Invalid token" }, { status: 401 })
-    }
+    if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
 
     const { id: circleId } = await params
-    const { searchParams } = new URL(request.url)
-    const eventId = searchParams.get("eventId")
+    const eventId = new URL(request.url).searchParams.get("eventId")
+    if (!eventId) return NextResponse.json({ error: "An eventId is required" }, { status: 400 })
 
-    if (!eventId) {
-      return NextResponse.json({ error: "Event ID is required" }, { status: 400 })
+    const [{ data: event, error: eventError }, { data: member, error: memberError }] = await Promise.all([
+      getSupabase()
+        .from("circle_events")
+        .select("id, organizer_id")
+        .eq("id", eventId)
+        .eq("circle_id", circleId)
+        .maybeSingle(),
+      getActiveMember(circleId, user.id),
+    ])
+
+    if (eventError || memberError) {
+      return NextResponse.json({ error: "Could not verify event permissions" }, { status: 500 })
+    }
+    if (!event) return NextResponse.json({ error: "Event not found" }, { status: 404 })
+    if (!member) return NextResponse.json({ error: "Join this Circle before managing events" }, { status: 403 })
+    if (event.organizer_id !== user.id && !canManageEvents(member)) {
+      return NextResponse.json({ error: "You cannot delete this event" }, { status: 403 })
     }
 
-    // Check if event exists and user has permission to delete it
-    const { data: event } = await supabase
-      .from("circle_events")
-      .select("organizer_id")
-      .eq("id", eventId)
-      .eq("circle_id", circleId)
-      .single()
-
-    if (!event) {
-      return NextResponse.json({ error: "Event not found" }, { status: 404 })
-    }
-
-    // Check if user is the organizer or has admin permissions
-    const { data: member } = await supabase
-      .from("circle_members")
-      .select("role")
-      .eq("circle_id", circleId)
-      .eq("user_id", user.id)
-      .in("role", ["owner", "admin"])
-      .single()
-
-    const isOrganizer = event.organizer_id === user.id
-    const isAdmin = !!member
-
-    if (!isOrganizer && !isAdmin) {
-      return NextResponse.json({ error: "Insufficient permissions to delete event" }, { status: 403 })
-    }
-
-    // Delete event
-    const { error: deleteError } = await supabase
+    const { error: deleteError } = await getSupabase()
       .from("circle_events")
       .delete()
       .eq("id", eventId)
+      .eq("circle_id", circleId)
 
     if (deleteError) {
-      console.error("Database delete error:", deleteError)
-      return NextResponse.json({ error: "Failed to delete event" }, { status: 500 })
+      console.error("Circle event delete failed:", deleteError)
+      return NextResponse.json({ error: "Could not delete this event" }, { status: 500 })
     }
 
     try {
-      await supabase.channel(`circle-admin:${circleId}`).send({
+      await getSupabase().channel(`circle-admin:${circleId}`).send({
         type: "broadcast",
         event: "admin_refresh",
         payload: { action: "delete_event", eventId },
       })
     } catch {
-      /* ignore */
+      // Realtime is an enhancement; the database delete is authoritative.
     }
 
-    return NextResponse.json({
-      success: true,
-      message: "Event deleted successfully"
-    })
+    return NextResponse.json({ success: true, message: "Event deleted successfully" })
   } catch (error) {
-    console.error("Error deleting circle event:", error)
-    return NextResponse.json({ error: "Internal server error" }, { status: 500 })
+    console.error("Circle events DELETE error:", error)
+    return NextResponse.json({ error: "Could not delete this event" }, { status: 500 })
   }
 }

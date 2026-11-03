@@ -11,13 +11,14 @@ export async function checkBlockStatus(
 ): Promise<{ blocked: boolean; direction: "by_me" | "by_them" | null }> {
   if (userId === otherUserId) return { blocked: false, direction: null }
 
-  const { data } = await supabase
+  const { data, error } = await supabase
     .from("user_blocks")
     .select("blocker_id, blocked_id")
     .or(`and(blocker_id.eq.${userId},blocked_id.eq.${otherUserId}),and(blocker_id.eq.${otherUserId},blocked_id.eq.${userId})`)
     .limit(1)
     .maybeSingle()
 
+  if (error) throw new Error("Could not verify profile block status")
   if (!data) return { blocked: false, direction: null }
 
   return {

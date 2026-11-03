@@ -1,23 +1,31 @@
 import { type NextRequest, NextResponse } from "next/server"
 import { createServerClient } from "@/lib/supabase"
 import { getUserFromRequest } from "@/lib/server-auth";
+import { checkCirclePrivateAccess } from "@/lib/circle-access";
 
 async function getUser(request: NextRequest) {
-  const supabase = createServerClient()
-  const user = await getUserFromRequest(request)
-  if (!user) return null
-  return user
+  return getUserFromRequest(request)
 }
 
 async function getMember(circleId: string, userId: string) {
   const supabase = createServerClient()
-  const { data } = await supabase
+  const { data: circle, error: circleError } = await supabase
+    .from("circles")
+    .select("owner_id")
+    .eq("id", circleId)
+    .maybeSingle()
+  if (circleError) throw new Error("Could not verify Circle ownership")
+  if (!circle) return null
+  if (circle.owner_id === userId) return { role: "owner", status: "active" }
+
+  const { data, error } = await supabase
     .from("circle_members")
     .select("role, status")
     .eq("circle_id", circleId)
     .eq("user_id", userId)
     .maybeSingle()
-  return data
+  if (error) throw new Error("Could not verify Circle membership")
+  return data && ["active", "approved"].includes(String(data.status || "")) ? data : null
 }
 
 function canManage(role?: string) {
@@ -26,6 +34,13 @@ function canManage(role?: string) {
 
 export async function GET(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const { id } = await params
+  if (!process.env.SUPABASE_SERVICE_ROLE_KEY) {
+    return NextResponse.json({ error: "Circle challenges are unavailable" }, { status: 503 })
+  }
+  const access = await checkCirclePrivateAccess(id, request.headers.get("authorization"))
+  if (access.isPrivate && !access.canView) {
+    return NextResponse.json({ error: "This Circle is private", locked: true }, { status: 403 })
+  }
   const supabase = createServerClient()
   const { data: challenges, error } = await supabase.from("circle_challenges").select("*").eq("circle_id", id).order("created_at", { ascending: false })
   if (error) return NextResponse.json({ error: error.message }, { status: 500 })
@@ -35,8 +50,16 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
 export async function POST(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const user = await getUser(request)
   if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
+  if (!process.env.SUPABASE_SERVICE_ROLE_KEY) {
+    return NextResponse.json({ error: "Circle challenge management is unavailable" }, { status: 503 })
+  }
   const { id } = await params
-  const member = await getMember(id, user.id)
+  let member: { role: string; status: string } | null
+  try {
+    member = await getMember(id, user.id)
+  } catch {
+    return NextResponse.json({ error: "Could not verify Circle permissions" }, { status: 503 })
+  }
   if (!canManage(member?.role)) return NextResponse.json({ error: "Insufficient permissions" }, { status: 403 })
   const body = await request.json()
   if (!body.title?.trim()) return NextResponse.json({ error: "Challenge title is required" }, { status: 400 })

@@ -115,6 +115,12 @@ export function EnhancedSettings() {
       mentions: true,
       circle_invites: true,
       promotional: false,
+      quiet_hours: {
+        enabled: false,
+        start: "22:00",
+        end: "08:00",
+        time_zone: "UTC",
+      },
     },
   })
   const [taggedCircles, setTaggedCircles] = useState<TaggedCircle[]>([])
@@ -198,6 +204,15 @@ export function EnhancedSettings() {
     if (!user) return
     const privacy = (user as any).privacy_settings || {}
     const notifications = (user as any).notification_settings || {}
+    const storedQuietHours = notifications.quiet_hours && typeof notifications.quiet_hours === "object"
+      ? notifications.quiet_hours
+      : {}
+    let deviceTimeZone = "UTC"
+    try {
+      deviceTimeZone = Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC"
+    } catch {
+      deviceTimeZone = "UTC"
+    }
     setFormData({
       display_name: user.display_name || "",
       username: user.username || "",
@@ -227,6 +242,18 @@ export function EnhancedSettings() {
         mentions: notifications.mentions !== false,
         circle_invites: notifications.circle_invites !== false,
         promotional: Boolean(notifications.promotional),
+        quiet_hours: {
+          enabled: storedQuietHours.enabled === true,
+          start: typeof storedQuietHours.start === "string" && /^([01]\d|2[0-3]):[0-5]\d$/.test(storedQuietHours.start)
+            ? storedQuietHours.start
+            : "22:00",
+          end: typeof storedQuietHours.end === "string" && /^([01]\d|2[0-3]):[0-5]\d$/.test(storedQuietHours.end)
+            ? storedQuietHours.end
+            : "08:00",
+          time_zone: typeof storedQuietHours.time_zone === "string" && storedQuietHours.time_zone.trim()
+            ? storedQuietHours.time_zone
+            : deviceTimeZone,
+        },
       },
     })
     const existingTags = Array.isArray((user as any).tagged_circles) ? (user as any).tagged_circles : []
@@ -287,6 +314,15 @@ export function EnhancedSettings() {
     }
   }
 
+  const updateQuietHours = (patch: Partial<typeof formData.notifications.quiet_hours>) => {
+    const next = {
+      ...formData.notifications,
+      quiet_hours: { ...formData.notifications.quiet_hours, ...patch },
+    }
+    setFormData((prev) => ({ ...prev, notifications: next }))
+    void quickSave({ notification_settings: next })
+  }
+
   const saveSettings = async () => {
     if (!user) return
     setLoading(true)
@@ -324,6 +360,7 @@ export function EnhancedSettings() {
             mentions: formData.notifications.mentions,
             circle_invites: formData.notifications.circle_invites,
             promotional: formData.notifications.promotional,
+            quiet_hours: formData.notifications.quiet_hours,
           },
         }),
       })
@@ -985,6 +1022,47 @@ export function EnhancedSettings() {
                   />
                 </div>
               ))}
+              <div className="space-y-3 rounded-xl border border-border p-3">
+                <div className="flex items-center justify-between gap-4">
+                  <div className="space-y-0.5">
+                    <Label htmlFor="quiet-hours-enabled">Quiet hours</Label>
+                    <p className="text-xs text-muted-foreground">
+                      Pause browser and native push alerts while keeping your in-app inbox available.
+                    </p>
+                  </div>
+                  <Switch
+                    id="quiet-hours-enabled"
+                    checked={formData.notifications.quiet_hours.enabled}
+                    onCheckedChange={(enabled) => updateQuietHours({ enabled })}
+                  />
+                </div>
+                <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                  <div className="space-y-1.5">
+                    <Label htmlFor="quiet-hours-start">Start</Label>
+                    <Input
+                      id="quiet-hours-start"
+                      type="time"
+                      value={formData.notifications.quiet_hours.start}
+                      disabled={!formData.notifications.quiet_hours.enabled}
+                      onChange={(event) => updateQuietHours({ start: event.target.value })}
+                    />
+                  </div>
+                  <div className="space-y-1.5">
+                    <Label htmlFor="quiet-hours-end">End</Label>
+                    <Input
+                      id="quiet-hours-end"
+                      type="time"
+                      value={formData.notifications.quiet_hours.end}
+                      disabled={!formData.notifications.quiet_hours.enabled}
+                      onChange={(event) => updateQuietHours({ end: event.target.value })}
+                    />
+                  </div>
+                </div>
+                <p className="text-xs text-muted-foreground">
+                  Times use {formData.notifications.quiet_hours.time_zone}. Matching start and end times pause push alerts all day.
+                  Changes save automatically.
+                </p>
+              </div>
             </CardContent>
           </Card>
         </TabsContent>

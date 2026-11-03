@@ -6,41 +6,85 @@ environment.** Before adding a new `.sql` file here, read this first.
 
 ## The canonical path
 
-`scripts/run-production-setup.mjs` is the only script that actually runs
-against a fresh or existing database (`npm run db:setup:production`). It
-applies files **in this exact order**:
+`scripts/run-production-setup.mjs` is the single source of truth for the production
+schema setup (`npm run db:setup:production`). Its `files` array defines the exact
+execution order; its strict-migration list defines which failures stop deployment.
+The list below highlights important stages and dependencies, but is not exhaustive.
+Do not use it as a substitute for reading the runner when changing migration order.
 
 1. `schema-compat-alignment.sql`
-2. `complete-database-setup.sql` — base tables (profiles, loops, circles,
-   messages, shop_items, gifts, achievements, admin_settings, …)
-3. `launch-schema-alignment.sql` — payment_logs, conversations, reels,
-   circle rooms, media_uploads, earnings, live_streams, …
-4. `loops-and-media.sql`
-5. `moderation-schema.sql`
-6. `circles-schema-alignment.sql`
-7. `enhanced-database-schema-part2.sql`
-8. `enhanced-database-schema-part3.sql`
-9. `wallet-and-events-schema.sql` — wallet_transactions, coin_gifts,
-   withdrawal_requests (the real Stripe-backed coin economy)
-10. `developer-features.sql` — developer_projects and related tables
-    (the real Developers gallery)
-11. `co-loop-sessions-schema.sql` — co_loop_sessions (durable Co-Loop Studio
-    ownership + co-author roster; see `/api/co-loop/session-info`)
-12. `rls-policies.sql`
-13. `realtime-functions.sql`
+2. `complete-database-setup.sql`
+3. `backend/migrations/0001_collections.sql` — shared profiles, Better Auth identity/session, Circles and Collections.
+4. `backend/migrations/0009_collection_invitation_expiry.sql` — durable pending invitation expiry and status constraints.
+5. `backend/migrations/0010_user_legal_acceptances.sql` — versioned Terms and Privacy acceptance, linked to Better Auth users.
+6. `backend/migrations/0004_chains.sql` — canonical Chain, member and contribution tables.
+7. `backend/migrations/0005_chain_collections.sql` — attach Chains to Collections.
+8. `backend/migrations/0006_chain_lifecycle.sql` — remix lineage and immutable contribution revision history.
+9. `premium-subscriptions-migration.sql` — Pro subscription ledger, Stripe identifiers/periods and auditable grant metadata.
+10. `launch-schema-alignment.sql`
+    - `creator-earnings-lifecycle.sql` — private USD-equivalent earnings ledger and source-idempotent atomic credits.
+11. `loops-and-media.sql`
+12. `moderation-schema.sql`
+13. `moderation-integrity.sql`
+14. `circles-schema-alignment.sql`
+15. `enhanced-database-schema-part2.sql`
+16. `enhanced-database-schema-part3.sql`
+17. `wallet-and-events-schema.sql`
+18. `achievements-system.sql`
+19. `achievements-integrity.sql`
+20. `premium-coin-purchase.sql`
+21. `developer-features.sql`
+22. `co-loop-sessions-schema.sql`
+23. `co-loop-invitation-expiry.sql`
+24. `co-loop-draft-schema.sql`
+25. `co-loop-room-controls.sql`
+26. `co-loop-chat-schema.sql`
+27. `message-reactions-schema-fix.sql`
+28. `dm-read-receipts-compat.sql`
+29. `messages-edit-forward-schema.sql`
+30. `circles-enhancements-schema.sql`
+31. `fix-circle-event-participants.sql`
+32. `circle-event-rsvp-lifecycle.sql`
+33. `dev-quests-schema.sql`
+34. `developer-hub-v2.sql`
+35. `dev-collaborators-schema.sql`
+36. `dev-repo-schema.sql`
+37. `rls-policies.sql`
+38. `realtime-functions.sql`
+39. `coin-packs-refunds-schema.sql`
+40. `fix-profiles-cosmetics-column.sql`
+41. `private-profiles-schema.sql`
+42. `user-blocks-schema.sql`
+43. `trending-hashtags-function.sql`
+44. `native-push-schema.sql`
+45. `clutch-duel-ads-tags-schema.sql`
+46. `awards-pro-circle-moments-schema.sql`
+47. `events-moderation-schema.sql`
+48. `custom-checkmarks-schema.sql`
+49. `update-coin-packs.sql`
+50. `open-co-loop-invites-schema.sql`
+51. `curated-emojis-schema.sql`
+52. `add-is-spoiler-column.sql`
+53. `explore-reels-indexes.sql`
+54. `community-chat-post-enhancements.sql`
+55. `community-fixes-2026-09.sql`
+56. `community-admin-settings-2026-09.sql`
+57. `fix-duel-votes-type.sql`
+58. `fix-poll-option-id-type.sql`
+59. `fix-poll-votes-poll-id-type.sql`
+60. `community-chat-schema.sql`
+61. `community-post-enhancements.sql`
 
-Every file in this list uses `CREATE TABLE IF NOT EXISTS` / `ADD COLUMN IF
-NOT EXISTS` so it's safe to re-run against a database that already has
-some of this schema applied (verified against the live project database
-during the Phase 1/3/5 hardening pass — zero data loss, idempotent
-re-runs).
-
-**If a table your code needs doesn't exist in a real environment, the fix
-is almost always "add the migration file to the `files` array in
-`run-production-setup.mjs`," not "write a new schema file no one runs."**
-Two real bugs (missing `wallet_transactions`/`coin_gifts`/
-`withdrawal_requests` and missing `developer_projects`) were exactly this
-— fully-written SQL files that nobody had wired into the pipeline.
+The security-sensitive migrations are strict: setup must fail rather than silently
+skip verification, discovery preferences, account blocks, public-trending privacy,
+moderation integrity, account appeals, Circle membership/ownership/event lifecycles,
+Co-Loop lifecycle/expiry, core Collections/legal acceptance, Premium billing,
+creator earnings, wallet/refund schema and purchases, and achievement integrity. In particular, `trending-hashtags-function.sql` is strict
+because a missing or failed privacy filter must never leave public trend aggregation
+on a permissive legacy definition. Collection expiry follows the Collection tables;
+legal acceptance follows Better Auth's user/session tables. Circle membership lifecycle
+runs after account suspension/deletion fields so joins, approvals, leave, kick and ban
+share the same Circle row lock and canonical member count.
 
 ## Everything else in this folder
 
@@ -73,12 +117,12 @@ real source-of-truth tables.
 
 ## Adding new schema
 
-1. Prefer extending an existing canonical file (idempotent
+5. Prefer extending an existing canonical file (idempotent
    `ALTER TABLE ... ADD COLUMN IF NOT EXISTS`) over creating a new one.
-2. If a new table is unavoidable, add it as a new idempotent `.sql` file
+6. If a new table is unavoidable, add it as a new idempotent `.sql` file
    and add it to the `files` array in `run-production-setup.mjs` in the
    same PR — a migration that isn't wired into the pipeline doesn't
    exist as far as any real environment is concerned.
-3. Never seed fake/demo rows in a migration that's part of the canonical
+7. Never seed fake/demo rows in a migration that's part of the canonical
    pipeline (see `developer-features.sql`'s history — it used to insert
    a canned sample project).

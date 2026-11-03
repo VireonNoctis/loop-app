@@ -41,17 +41,71 @@ ALTER TABLE public.co_loop_sessions ENABLE ROW LEVEL SECURITY;
 
 DO $$
 BEGIN
+    -- Session drafts, roster metadata and lock state are private. Server routes
+    -- authenticate room participants; no public or authenticated-user policy
+    -- should expose this table through the Supabase REST endpoint.
     DROP POLICY IF EXISTS "Anyone can read co_loop_sessions" ON public.co_loop_sessions;
-    CREATE POLICY "Anyone can read co_loop_sessions" ON public.co_loop_sessions FOR SELECT USING (true);
-
-    -- Writes go through the service-role API routes (/api/co-loop/session-info),
-    -- which authenticate the caller server-side.
     DROP POLICY IF EXISTS "Service role manages co_loop_sessions" ON public.co_loop_sessions;
-    CREATE POLICY "Service role manages co_loop_sessions" ON public.co_loop_sessions FOR ALL USING (true) WITH CHECK (true);
+    CREATE POLICY "Service role manages co_loop_sessions" ON public.co_loop_sessions
+        FOR ALL TO service_role USING (true) WITH CHECK (true);
 END $$;
 
 DO $$
 BEGIN
   ALTER PUBLICATION supabase_realtime ADD TABLE co_loop_sessions;
 EXCEPTION WHEN OTHERS THEN NULL;
+END $$;
+
+-- Canonical Co-Loop direct-invitation lifecycle. Notifications and DMs are
+-- delivery surfaces, never the authorization source.
+CREATE TABLE IF NOT EXISTS public.co_loop_invitations (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    session_id TEXT NOT NULL,
+    inviter_id UUID NOT NULL REFERENCES public.profiles(id) ON DELETE CASCADE,
+    invitee_id UUID NOT NULL REFERENCES public.profiles(id) ON DELETE CASCADE,
+    status TEXT NOT NULL DEFAULT 'pending'
+        CHECK (status IN ('pending', 'accepted', 'declined', 'revoked', 'expired')),
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    expires_at TIMESTAMPTZ NOT NULL DEFAULT (NOW() + INTERVAL '7 days'),
+    responded_at TIMESTAMPTZ,
+    UNIQUE (session_id, invitee_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_co_loop_invitations_invitee_status
+    ON public.co_loop_invitations(invitee_id, status);
+
+ALTER TABLE public.co_loop_invitations ENABLE ROW LEVEL SECURITY;
+DO $$
+BEGIN
+    DROP POLICY IF EXISTS "Service role manages co_loop_invitations" ON public.co_loop_invitations;
+    CREATE POLICY "Service role manages co_loop_invitations"
+        ON public.co_loop_invitations
+        FOR ALL TO service_role USING (true) WITH CHECK (true);
+END $$;
+
+-- Canonical Co-Loop direct-invitation lifecycle. Notifications and DMs are
+-- delivery surfaces, never the authorization source.
+CREATE TABLE IF NOT EXISTS public.co_loop_invitations (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    session_id TEXT NOT NULL,
+    inviter_id UUID NOT NULL REFERENCES public.profiles(id) ON DELETE CASCADE,
+    invitee_id UUID NOT NULL REFERENCES public.profiles(id) ON DELETE CASCADE,
+    status TEXT NOT NULL DEFAULT 'pending'
+        CHECK (status IN ('pending', 'accepted', 'declined', 'revoked', 'expired')),
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    expires_at TIMESTAMPTZ NOT NULL DEFAULT (NOW() + INTERVAL '7 days'),
+    responded_at TIMESTAMPTZ,
+    UNIQUE (session_id, invitee_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_co_loop_invitations_invitee_status
+    ON public.co_loop_invitations(invitee_id, status);
+
+ALTER TABLE public.co_loop_invitations ENABLE ROW LEVEL SECURITY;
+DO $$
+BEGIN
+    DROP POLICY IF EXISTS "Service role manages co_loop_invitations" ON public.co_loop_invitations;
+    CREATE POLICY "Service role manages co_loop_invitations"
+        ON public.co_loop_invitations
+        FOR ALL TO service_role USING (true) WITH CHECK (true);
 END $$;

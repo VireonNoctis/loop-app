@@ -2,6 +2,7 @@ import { createClient } from "@/lib/supabase"
 import { getCategoryConfig, categoryDefaultSpaces } from "@/lib/community-categories"
 import { canManageCircle, normalizeRole } from "@/lib/circle-permissions"
 import { listPowers, viewerAbilities } from "@/lib/community-permissions"
+import { isPrivateCircleDiscoverable } from "@/lib/circle-membership-state"
 import type { SupabaseClient } from "@supabase/supabase-js"
 
 // The community engine works against a fast-evolving schema — the generated
@@ -12,8 +13,10 @@ type SB = any
 
 export function communityClient() {
   const url = process.env.NEXT_PUBLIC_SUPABASE_URL || process.env.SUPABASE_URL
-  const key = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
-  if (!url || !key) throw new Error("Missing Supabase configuration")
+  const key = process.env.SUPABASE_SERVICE_ROLE_KEY
+  if (!url || !key) {
+    throw new Error("Community server operations require SUPABASE_SERVICE_ROLE_KEY")
+  }
   return createClient(url, key, { auth: { autoRefreshToken: false, persistSession: false } })
 }
 
@@ -1037,11 +1040,22 @@ export async function listCommunitiesForDiscovery(sb: SB, opts: { sort?: string;
     for (const m of memberships || []) memberMap.set(String(m.circle_id), m)
   }
 
-  // Recent activity per community (circle_activity has no FK to circles, so
-  // count it in one grouped pass instead of an embedded relationship).
+  // Private Circles are visible in discovery only to their owners, members
+  // and pending applicants.
+  const visibleCommunities = (data || []).filter((circle: any) => {
+    const membership = memberMap.get(String(circle.id))
+    return isPrivateCircleDiscoverable({
+      isPrivate: Boolean(circle.is_private),
+      viewerId,
+      ownerId: circle.owner_id || null,
+      membershipStatus: membership?.status,
+    })
+  })
+
+  // Count recent activity only for Circles this viewer may discover.
   const activeMap = new Map<string, number>()
-  if (data && data.length > 0) {
-    const ids = data.map((c: any) => c.id)
+  if (visibleCommunities.length > 0) {
+    const ids = visibleCommunities.map((c: any) => c.id)
     const { data: activity } = await sb
       .from("circle_activity")
       .select("circle_id")
@@ -1054,7 +1068,7 @@ export async function listCommunitiesForDiscovery(sb: SB, opts: { sort?: string;
   }
 
   const now = Date.now()
-  const enriched = (data || []).map((c: any) => {
+  const enriched = visibleCommunities.map((c: any) => {
     const memberCount = Number(Array.isArray(c.member_count) ? c.member_count[0]?.count : c.member_count || 0)
     const activeCount = activeMap.get(String(c.id)) || 0
     const createdAt = new Date(c.created_at).getTime()
@@ -1066,7 +1080,7 @@ export async function listCommunitiesForDiscovery(sb: SB, opts: { sort?: string;
       member_count: memberCount,
       active_count: activeCount,
       pulse,
-      is_member: membership?.status === "active",
+      is_member: membership?.status === "active" || membership?.status === "approved",
       membership_status: membership?.status || null,
       user_role: membership?.role || "guest",
       category_config: getCategoryConfig(c.category),

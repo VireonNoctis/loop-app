@@ -73,8 +73,28 @@ const nextConfig = {
     }
     return config
   },
-  async rewrites() {
+  async redirects() {
     return [
+      { source: "/terms-of-service", destination: "/terms", permanent: true },
+      { source: "/terms-of-use", destination: "/terms", permanent: true },
+      { source: "/tos", destination: "/terms", permanent: true },
+      { source: "/legal/terms", destination: "/terms", permanent: true },
+      { source: "/privacy-policy", destination: "/privacy", permanent: true },
+      { source: "/legal/privacy", destination: "/privacy", permanent: true },
+    ]
+  },
+  async rewrites() {
+    const rustApiOrigin = (process.env.RUST_API_ORIGIN || (process.env.NODE_ENV === "development" ? "http://127.0.0.1:8080" : "")).replace(/\/+$/, "")
+
+    return [
+      ...(rustApiOrigin
+        ? [{
+            // Same-origin browser calls are forwarded to the Rust service.
+            // Keep this opt-in until a domain is migrated and verified.
+            source: "/api/v1/:path*",
+            destination: `${rustApiOrigin}/v1/:path*`,
+          }]
+        : []),
       {
         source: "/api/trees/:path*",
         destination: "/api/reels/:path*",

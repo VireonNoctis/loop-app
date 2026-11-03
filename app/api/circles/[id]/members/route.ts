@@ -1,18 +1,26 @@
 import { type NextRequest, NextResponse } from "next/server"
-import { createClient } from "@/lib/supabase"
+import { createServerClient } from "@/lib/supabase"
 import { checkCirclePrivateAccess } from "@/lib/circle-access"
 import { getUserFromRequest } from "@/lib/server-auth"
 
-const supabase = createClient(process.env.NEXT_PUBLIC_SUPABASE_URL || "https://placeholder.supabase.co", process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || "placeholder")
+function getCircleMembersClient() {
+  if (!process.env.SUPABASE_SERVICE_ROLE_KEY) return null
+  return createServerClient()
+}
 
 // Get circle members
 export async function GET(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   try {
+    const supabase = getCircleMembersClient()
+    if (!supabase) return NextResponse.json({ error: "Circle member service is unavailable" }, { status: 503 })
+
     const { searchParams } = new URL(request.url)
-    const limit = Number.parseInt(searchParams.get("limit") || "50")
-    const offset = Number.parseInt(searchParams.get("offset") || "0")
+    const requestedLimit = Number.parseInt(searchParams.get("limit") || "50", 10)
+    const requestedOffset = Number.parseInt(searchParams.get("offset") || "0", 10)
+    const limit = Number.isFinite(requestedLimit) ? Math.max(1, Math.min(100, requestedLimit)) : 50
+    const offset = Number.isFinite(requestedOffset) ? Math.max(0, Math.min(100_000, requestedOffset)) : 0
     const role = searchParams.get("role")
-    const search = searchParams.get("search")
+    const search = (searchParams.get("search") || "").trim().slice(0, 100)
 
     const { id: circleId } = await params
 
@@ -25,10 +33,11 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
     let query = supabase
       .from("circle_members")
       .select(`
-        *,
-        user:profiles(id, username, display_name, avatar_url, video_avatar_url, is_verified, is_premium, last_active, loop_coins, level)
+        id, circle_id, user_id, role, status, custom_title, permissions, joined_at,
+        user:profiles(id, username, display_name, avatar_url, video_avatar_url, is_verified)
       `)
       .eq("circle_id", circleId)
+      .in("status", ["active", "approved"])
       .order("joined_at", { ascending: false })
       .range(offset, offset + limit - 1)
 
@@ -62,96 +71,109 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
 export async function PUT(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   try {
     const user = await getUserFromRequest(request)
-
-    if (!user) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
-    }
+    if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
 
     const { id: circleId } = await params
-    const { targetUserId, newRole, status, customTitle, permissions } = await request.json()
-
-    // Check if requesting user has permission (owner or admin)
-    const { data: requestingMember } = await supabase
-      .from("circle_members")
-      .select("role")
-      .eq("circle_id", circleId)
-      .eq("user_id", user.id)
-      .in("role", ["owner", "admin"])
-      .single()
-
-    if (!requestingMember) {
-      return NextResponse.json({ error: "Insufficient permissions" }, { status: 403 })
+    const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
+    if (!uuidPattern.test(circleId)) {
+      return NextResponse.json({ error: "Invalid Circle ID" }, { status: 400 })
     }
 
-    const updates: Record<string, any> = {}
+    const body = await request.json().catch(() => null)
+    if (!body || typeof body !== "object" || Array.isArray(body)) {
+      return NextResponse.json({ error: "Invalid request body" }, { status: 400 })
+    }
 
-    // Role is optional now — an admin may only want to set a custom
-    // title/permissions without changing the base owner/admin/moderator/
-    // member role.
-    if (newRole) {
-      const validRoles = ["member", "moderator", "admin"]
-      if (!validRoles.includes(newRole)) {
-        return NextResponse.json({ error: "Invalid role" }, { status: 400 })
+    const { targetUserId, newRole, status, customTitle, permissions } = body as Record<string, unknown>
+    if (typeof targetUserId !== "string" || !uuidPattern.test(targetUserId)) {
+      return NextResponse.json({ error: "A valid target user ID is required" }, { status: 400 })
+    }
+    // Membership transitions have their own join/approval/leave/ban paths.
+    if (status !== undefined) {
+      return NextResponse.json({ error: "Use the Circle membership workflow to change member status" }, { status: 400 })
+    }
+    if (newRole !== undefined && (typeof newRole !== "string" || !["member", "moderator", "admin"].includes(newRole))) {
+      return NextResponse.json({ error: "Choose a valid Circle role" }, { status: 400 })
+    }
+    if (customTitle !== undefined && customTitle !== null && typeof customTitle !== "string") {
+      return NextResponse.json({ error: "Custom title must be text" }, { status: 400 })
+    }
+    if (typeof customTitle === "string" && customTitle.trim().length > 40) {
+      return NextResponse.json({ error: "Custom titles cannot exceed 40 characters" }, { status: 400 })
+    }
+    if (permissions !== undefined && (!permissions || typeof permissions !== "object" || Array.isArray(permissions))) {
+      return NextResponse.json({ error: "Permissions must be an object" }, { status: 400 })
+    }
+
+    const allowedPermissions = [
+      "can_manage_events",
+      "can_manage_rooms",
+      "can_pin_posts",
+      "can_moderate",
+      "can_post_announcements",
+    ] as const
+    const sanitizedPermissions: Record<string, boolean> = {}
+    if (permissions !== undefined) {
+      const supplied = permissions as Record<string, unknown>
+      for (const [key, value] of Object.entries(supplied)) {
+        if (!allowedPermissions.includes(key as typeof allowedPermissions[number])) {
+          return NextResponse.json({ error: `Unsupported permission: ${key}` }, { status: 400 })
+        }
+        if (typeof value !== "boolean") {
+          return NextResponse.json({ error: "Permission values must be boolean" }, { status: 400 })
+        }
+        sanitizedPermissions[key] = value
       }
-      updates.role = newRole
-    }
-    if (status === "active" || status === "pending" || status === "banned") {
-      updates.status = status
     }
 
-    // Custom title + granular per-member permission overrides — lets an
-    // admin label someone "Events Lead" and grant can_manage_events without
-    // making them a full moderator (custom roles beyond the 4 fixed ones).
-    if (typeof customTitle === "string") {
-      updates.custom_title = customTitle.trim().slice(0, 40) || null
-    }
-    if (permissions && typeof permissions === "object") {
-      const ALLOWED_PERMISSIONS = [
-        "can_manage_events",
-        "can_manage_rooms",
-        "can_pin_posts",
-        "can_moderate",
-        "can_post_announcements",
-      ]
-      const sanitized: Record<string, boolean> = {}
-      for (const key of ALLOWED_PERMISSIONS) {
-        if (key in permissions) sanitized[key] = Boolean(permissions[key])
+    const supabase = getCircleMembersClient()
+    if (!supabase) return NextResponse.json({ error: "Circle member service is unavailable" }, { status: 503 })
+
+    const { data, error } = await supabase.rpc("update_circle_member", {
+      p_circle_id: circleId,
+      p_actor_id: user.id,
+      p_target_user_id: targetUserId,
+      p_new_role: typeof newRole === "string" ? newRole : null,
+      p_update_custom_title: customTitle !== undefined,
+      p_custom_title: typeof customTitle === "string" ? customTitle.trim() : null,
+      p_update_permissions: permissions !== undefined,
+      p_permissions: permissions === undefined ? null : sanitizedPermissions,
+    })
+
+    if (error) {
+      console.error("Atomic Circle member update failed:", error)
+      if (error.code === "42501") return NextResponse.json({ error: error.message || "Insufficient permissions" }, { status: 403 })
+      if (error.code === "P0002") return NextResponse.json({ error: "Circle or member not found" }, { status: 404 })
+      if (error.code === "55000") return NextResponse.json({ error: error.message || "Member state changed" }, { status: 409 })
+      if (error.code === "22023") return NextResponse.json({ error: error.message || "Invalid member update" }, { status: 400 })
+      if (["42883", "42P01", "42703"].includes(error.code || "")) {
+        return NextResponse.json({ error: "Atomic Circle member updates are unavailable until the database migration is applied." }, { status: 503 })
       }
-      updates.permissions = sanitized
+      return NextResponse.json({ error: "Could not update this member" }, { status: 500 })
     }
 
-    if (Object.keys(updates).length === 0) {
-      return NextResponse.json({ error: "Nothing to update" }, { status: 400 })
+    const result = (Array.isArray(data) ? data[0] : data) as { member?: Record<string, unknown> } | null
+    if (!result?.member || result.member.user_id !== targetUserId || result.member.circle_id !== circleId) {
+      return NextResponse.json({ error: "Circle member update returned an invalid result" }, { status: 500 })
     }
 
-    // Update member role
-    const { data: updatedMember, error: updateError } = await supabase
-      .from("circle_members")
-      .update(updates)
-      .eq("circle_id", circleId)
-      .eq("user_id", targetUserId)
-      .select(`
-        *,
-        user:profiles(id, username, display_name, avatar_url, video_avatar_url)
-      `)
-      .single()
-
-    if (updateError) {
-      console.error("Database update error:", updateError)
-      return NextResponse.json({ error: "Failed to update member role" }, { status: 500 })
-    }
-
-    if (!updatedMember) {
-      return NextResponse.json({ error: "Member not found" }, { status: 404 })
+    try {
+      await supabase.channel(`circle-admin:${circleId}`).send({
+        type: "broadcast",
+        event: "admin_refresh",
+        payload: { action: "member_updated", userId: targetUserId },
+      })
+    } catch {
+      /* realtime refresh is best-effort */
     }
 
     return NextResponse.json({
       success: true,
-      member: updatedMember,
-      message: newRole ? `Member role updated to ${newRole}` : "Member updated"
+      member: result.member,
+      message: typeof newRole === "string" ? `Member role updated to ${newRole}` : "Member updated",
     })
   } catch (error) {
-    console.error("Error updating member role:", error)
+    console.error("Error updating Circle member:", error)
     return NextResponse.json({ error: "Internal server error" }, { status: 500 })
   }
 }
@@ -160,120 +182,76 @@ export async function PUT(request: NextRequest, { params }: { params: Promise<{ 
 export async function DELETE(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   try {
     const user = await getUserFromRequest(request)
-
-    if (!user) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
-    }
+    if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
 
     const { id: circleId } = await params
     const { searchParams } = new URL(request.url)
     const targetUserId = searchParams.get("userId")
-    const action = searchParams.get("action") || "remove" // remove or ban
+    const action = searchParams.get("action") || "remove"
+    const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
 
-    if (!targetUserId) {
-      return NextResponse.json({ error: "Target user ID is required" }, { status: 400 })
+    if (!uuidPattern.test(circleId) || !targetUserId || !uuidPattern.test(targetUserId)) {
+      return NextResponse.json({ error: "A valid Circle and target user ID are required" }, { status: 400 })
+    }
+    if (action !== "remove" && action !== "ban") {
+      return NextResponse.json({ error: "Action must be remove or ban" }, { status: 400 })
+    }
+    if (targetUserId === user.id) {
+      return NextResponse.json({ error: "Use the leave Circle action to remove yourself" }, { status: 409 })
     }
 
-    // Check if requesting user has permission (owner or admin/moderator)
-    const { data: requestingMember } = await supabase
-      .from("circle_members")
-      .select("role")
-      .eq("circle_id", circleId)
-      .eq("user_id", user.id)
-      .in("role", ["owner", "admin", "moderator"])
-      .single()
+    const supabase = getCircleMembersClient()
+    if (!supabase) return NextResponse.json({ error: "Circle member service is unavailable" }, { status: 503 })
 
-    if (!requestingMember) {
-      return NextResponse.json({ error: "Insufficient permissions" }, { status: 403 })
-    }
+    // The RPC locks the Circle row, rechecks current actor/target roles and
+    // changes membership + member_count together with join/approval traffic.
+    const { data, error } = await supabase.rpc("manage_circle_member", {
+      p_circle_id: circleId,
+      p_actor_id: user.id,
+      p_target_user_id: targetUserId,
+      p_action: action,
+    })
 
-    // Check target user's role to prevent lower roles from removing higher roles
-    const { data: targetMember } = await supabase
-      .from("circle_members")
-      .select("role")
-      .eq("circle_id", circleId)
-      .eq("user_id", targetUserId)
-      .single()
-
-    if (!targetMember) {
-      return NextResponse.json({ error: "Member not found" }, { status: 404 })
-    }
-
-    // Role hierarchy check
-    const roleHierarchy: { [key: string]: number } = { "owner": 3, "admin": 2, "moderator": 1, "member": 0 }
-    if (roleHierarchy[requestingMember.role] <= roleHierarchy[targetMember.role] && 
-        !(requestingMember.role === "owner")) {
-      return NextResponse.json({ 
-        error: "Cannot remove user with equal or higher role" 
-      }, { status: 403 })
-    }
-
-    // Perform action
-    if (action === "ban") {
-      // Ban member (updated_at may be missing on older schemas)
-      let banError = (
-        await supabase
-          .from("circle_members")
-          .update({
-            status: "banned",
-            updated_at: new Date().toISOString(),
-          })
-          .eq("circle_id", circleId)
-          .eq("user_id", targetUserId)
-      ).error
-
-      if (banError && /updated_at|PGRST204/i.test(banError.message || banError.code || "")) {
-        banError = (
-          await supabase
-            .from("circle_members")
-            .update({ status: "banned" })
-            .eq("circle_id", circleId)
-            .eq("user_id", targetUserId)
-        ).error
+    if (error) {
+      console.error("Atomic Circle member moderation failed:", error)
+      if (error.code === "42501") return NextResponse.json({ error: error.message || "Insufficient Circle permissions" }, { status: 403 })
+      if (error.code === "P0002") return NextResponse.json({ error: "Circle or member not found" }, { status: 404 })
+      if (error.code === "55000") return NextResponse.json({ error: error.message || "Membership has already changed" }, { status: 409 })
+      if (error.code === "22023") return NextResponse.json({ error: error.message || "Invalid membership action" }, { status: 409 })
+      if (["42883", "42P01", "42703"].includes(error.code || "")) {
+        return NextResponse.json({ error: "Atomic Circle moderation is unavailable until the database migration is applied." }, { status: 503 })
       }
+      return NextResponse.json({ error: "Could not update Circle membership" }, { status: 500 })
+    }
 
-      if (banError) {
-        console.error("Database ban error:", banError)
-        return NextResponse.json({ error: "Failed to ban member" }, { status: 500 })
-      }
+    const result = (Array.isArray(data) ? data[0] : data) as {
+      circle_id?: string
+      user_id?: string
+      status?: string
+      member_count?: number
+    } | null
+    if (result?.circle_id !== circleId || result.user_id !== targetUserId || !["banned", "removed"].includes(result.status || "")) {
+      return NextResponse.json({ error: "Circle moderation returned an invalid result" }, { status: 500 })
+    }
 
-      try {
-        await supabase.channel(`circle-admin:${circleId}`).send({
-          type: "broadcast",
-          event: "admin_refresh",
-          payload: { action: "ban", userId: targetUserId },
-        })
-      } catch {
-        /* ignore broadcast failures */
-      }
-
-      return NextResponse.json({
-        success: true,
-        message: "Member banned successfully"
+    try {
+      await supabase.channel(`circle-admin:${circleId}`).send({
+        type: "broadcast",
+        event: "admin_refresh",
+        payload: { action, userId: targetUserId },
       })
-    } else {
-      // Remove member
-      const { error: removeError } = await supabase
-        .from("circle_members")
-        .delete()
-        .eq("circle_id", circleId)
-        .eq("user_id", targetUserId)
-
-      if (removeError) {
-        console.error("Database remove error:", removeError)
-        return NextResponse.json({ error: "Failed to remove member" }, { status: 500 })
-      }
-
-      // Update circle member count
-      await supabase.rpc('decrement_circle_member_count', { circle_id: circleId })
-
-      return NextResponse.json({
-        success: true,
-        message: "Member removed successfully"
-      })
+    } catch {
+      /* realtime refresh is best-effort; the database result is canonical */
     }
+
+    return NextResponse.json({
+      success: true,
+      status: result.status,
+      member_count: result.member_count,
+      message: action === "ban" ? "Member banned successfully" : "Member removed successfully",
+    })
   } catch (error) {
-    console.error("Error removing member:", error)
+    console.error("Error removing Circle member:", error)
     return NextResponse.json({ error: "Internal server error" }, { status: 500 })
   }
 }

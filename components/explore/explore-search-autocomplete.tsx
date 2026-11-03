@@ -18,13 +18,15 @@ import {
   Hash,
   Users,
   FileText,
+  GitBranch,
+  Bookmark,
   
   Flame,
 } from "lucide-react"
 
 interface SearchSuggestion {
   id: string
-  type: "user" | "hashtag" | "post"
+  type: "user" | "hashtag" | "post" | "chain" | "collection" | "circle"
   title: string
   subtitle?: string
   avatar_url?: string
@@ -131,6 +133,33 @@ export function ExploreSearchAutocomplete({ onSearch, className }: ExploreSearch
           })
         }
 
+
+        // Collaborative objects share the same visibility-aware search API.
+        for (const chain of (data.chains || []).slice(0, 2)) {
+          items.push({
+            id: `chain:${chain.id}`,
+            type: "chain",
+            title: chain.title,
+            subtitle: "Chain · " + (chain.kind || "collaborative idea"),
+          })
+        }
+        for (const collection of (data.collections || []).slice(0, 2)) {
+          items.push({
+            id: `collection:${collection.id}`,
+            type: "collection",
+            title: collection.title,
+            subtitle: collection.is_collaborative ? "Collaborative collection" : "Collection",
+          })
+        }
+        for (const circle of (data.circles || []).slice(0, 2)) {
+          items.push({
+            id: `circle:${circle.id}`,
+            type: "circle",
+            title: circle.name,
+            subtitle: "Circle · " + (circle.member_count || 0) + " members",
+          })
+        }
+
         setSuggestions(items)
       }
     } catch {
@@ -196,7 +225,7 @@ export function ExploreSearchAutocomplete({ onSearch, className }: ExploreSearch
         <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
         <Input
           ref={inputRef}
-          placeholder="Search people, hashtags, posts..."
+          placeholder="Search people, ideas, Chains, Collections..."
           value={query}
           onChange={(e) => {
             setQuery(e.target.value)
@@ -260,6 +289,18 @@ export function ExploreSearchAutocomplete({ onSearch, className }: ExploreSearch
                       ) : item.type === "hashtag" ? (
                         <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-primary/10">
                           <Hash className="h-4 w-4 text-primary" />
+                        </div>
+                      ) : item.type === "chain" ? (
+                        <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-primary/10">
+                          <GitBranch className="h-4 w-4 text-primary" />
+                        </div>
+                      ) : item.type === "collection" ? (
+                        <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-primary/10">
+                          <Bookmark className="h-4 w-4 text-primary" />
+                        </div>
+                      ) : item.type === "circle" ? (
+                        <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-primary/10">
+                          <Users className="h-4 w-4 text-primary" />
                         </div>
                       ) : (
                         <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-muted">

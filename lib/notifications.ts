@@ -3,6 +3,7 @@ import type { SupabaseClient } from "@supabase/supabase-js"
 import { sendWebPushToUser, sendWebPushToUsers, type PushCategory, type PushPayload } from "@/lib/web-push"
 import { sendFcmToUser } from "@/lib/fcm"
 import { isSystemNotificationType, maskAdminCopy } from "@/lib/notification-copy"
+import { getPushSuppressionReason } from "@/lib/notification-preferences"
 
 export type NotifyInput = {
   userId: string
@@ -106,18 +107,33 @@ export async function notifyUser(
           } : {}),
         },
       }
-      const result = await sendWebPushToUser(input.userId, payload, {
-        category: input.pushCategory || "system",
-      })
-      pushDelivered = result.delivered
-      // Native Capacitor shells receive the same notification via FCM.
-      await sendFcmToUser(supabase, input.userId, {
-        title,
-        body: message,
-        url: input.actionUrl || "/",
-        icon: payload.icon,
-        data: input.data,
-      })
+      const category = input.pushCategory || "system"
+      // Resolve preferences once before either transport. If this lookup fails,
+      // keep the in-app notification but do not bypass a user's push controls.
+      const { data: preferenceProfile, error: preferenceError } = await supabase
+        .from("profiles")
+        .select("notification_settings")
+        .eq("id", input.userId)
+        .maybeSingle()
+
+      if (preferenceError || !preferenceProfile) {
+        console.warn("Push delivery skipped because notification preferences could not be loaded:", preferenceError?.message || "profile missing")
+      } else if (!getPushSuppressionReason(preferenceProfile.notification_settings, category)) {
+        const result = await sendWebPushToUser(input.userId, payload, {
+          category,
+          skipPrefsCheck: true,
+        })
+        pushDelivered = result.delivered
+        // A missing browser subscription is not a preference opt-out: native
+        // devices may still be registered and should receive the same alert.
+        await sendFcmToUser(supabase, input.userId, {
+          title,
+          body: message,
+          url: input.actionUrl || "/",
+          icon: payload.icon,
+          data: input.data,
+        })
+      }
     }
   } catch (err) {
     console.warn("notifyUser error:", err)

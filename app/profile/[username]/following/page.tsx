@@ -13,6 +13,7 @@ import { Header } from "@/components/header"
 import { useAuth } from "@/hooks/use-auth"
 import { useToast } from "@/hooks/use-toast"
 import { VerifiedSeal } from "@/components/ui/verified-seal"
+import { isRustApiUnavailable, rustApiRequest } from "@/lib/rust-api"
 
 type Person = {
   id: string
@@ -21,6 +22,7 @@ type Person = {
   avatar_url?: string
   is_verified?: boolean
   is_following?: boolean
+  has_pending_follow_request?: boolean
   is_self?: boolean
 }
 
@@ -47,19 +49,28 @@ export default function FollowingPage() {
         if (!profileRes.ok) throw new Error(profileData.error || "Profile not found")
         if (cancelled) return
 
-        const res = await fetch(`/api/users/${profileData.profile.id}/following?limit=50`, {
-          headers: { ...getAuthHeader() },
-          cache: "no-store",
-        })
-        const data = await res.json()
-        if (!res.ok) throw new Error(data.error || "Failed to load following")
-        if (!cancelled) {
-          setPeople(
-            (data.following || []).map((p: any) => ({
-              ...p,
-              is_following: Boolean(p.is_following),
-            })),
+        let listData: { following?: Person[]; has_more?: boolean }
+        try {
+          listData = await rustApiRequest<{ following: Person[]; has_more: boolean }>(
+            `users/${encodeURIComponent(profileData.profile.id)}/following?limit=50`,
+            { headers: user ? getAuthHeader() : undefined, cache: "no-store" },
           )
+        } catch (cause) {
+          if (!isRustApiUnavailable(cause)) throw cause
+          const response = await fetch(`/api/users/${profileData.profile.id}/following?limit=50`, {
+            headers: user ? { ...getAuthHeader() } : undefined,
+            cache: "no-store",
+          })
+          const legacyData = await response.json()
+          if (!response.ok) throw new Error(legacyData.error || "Failed to load following")
+          listData = legacyData
+        }
+        if (!cancelled) {
+          setPeople((listData.following || []).map((person) => ({
+            ...person,
+            is_following: Boolean(person.is_following),
+            has_pending_follow_request: Boolean(person.has_pending_follow_request),
+          })))
         }
       } catch (error: any) {
         if (!cancelled) {
@@ -88,20 +99,56 @@ export default function FollowingPage() {
 
   const toggleFollow = async (person: Person) => {
     if (!user || person.is_self) return
-    const action = person.is_following ? "unfollow" : "follow"
+    const action = person.is_following || person.has_pending_follow_request ? "unfollow" : "follow"
     setPeople((prev) =>
-      prev.map((p) => (p.id === person.id ? { ...p, is_following: !p.is_following } : p)),
+      prev.map((p) => (
+        p.id === person.id
+          ? { ...p, is_following: action === "follow", has_pending_follow_request: false }
+          : p
+      )),
     )
     try {
-      const res = await fetch("/api/users/follow", {
-        method: "POST",
-        headers: { "Content-Type": "application/json", ...getAuthHeader() },
-        body: JSON.stringify({ target_user_id: person.id, action }),
-      })
-      if (!res.ok) throw new Error("Follow failed")
+      let result: {
+        is_following?: boolean
+        requires_approval?: boolean
+        has_pending_follow_request?: boolean
+      }
+      try {
+        result = await rustApiRequest(`users/${encodeURIComponent(person.id)}/follow`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", ...getAuthHeader() },
+          body: JSON.stringify({ action }),
+        })
+      } catch (cause) {
+        if (!isRustApiUnavailable(cause)) throw cause
+        const response = await fetch("/api/users/follow", {
+          method: "POST",
+          headers: { "Content-Type": "application/json", ...getAuthHeader() },
+          body: JSON.stringify({ target_user_id: person.id, action }),
+        })
+        result = await response.json()
+        if (!response.ok) throw new Error("Follow failed")
+      }
+
+      const pending = Boolean(result.has_pending_follow_request || result.requires_approval)
+      const following = Boolean(result.is_following ?? (action === "follow" && !pending))
+      setPeople((prev) =>
+        prev.map((p) => p.id === person.id
+          ? { ...p, is_following: following, has_pending_follow_request: pending }
+          : p
+        ),
+      )
     } catch {
       setPeople((prev) =>
-        prev.map((p) => (p.id === person.id ? { ...p, is_following: person.is_following } : p)),
+        prev.map((p) => (
+          p.id === person.id
+            ? {
+                ...p,
+                is_following: Boolean(person.is_following),
+                has_pending_follow_request: Boolean(person.has_pending_follow_request),
+              }
+            : p
+        )),
       )
       toast({ title: "Could not update follow", variant: "destructive" })
     }
@@ -172,7 +219,7 @@ export default function FollowingPage() {
                       void toggleFollow(person)
                     }}
                   >
-                    {person.is_following ? "Following" : "Follow"}
+                    {person.is_following ? "Following" : person.has_pending_follow_request ? "Requested" : "Follow"}
                   </Button>
                 )}
               </div>

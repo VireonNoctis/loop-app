@@ -1,10 +1,15 @@
 import { type NextRequest, NextResponse } from "next/server"
 import { communityClient, logCommunityActivity, canModerate } from "@/lib/community-engine"
 import { getUserFromRequest } from "@/lib/server-auth"
+import { checkCirclePrivateAccess } from "@/lib/circle-access"
 
 export async function GET(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   try {
     const { id } = await params
+    const access = await checkCirclePrivateAccess(id, request.headers.get("authorization"))
+    if (access.isPrivate && !access.canView) {
+      return NextResponse.json({ error: "This Circle is private", locked: true }, { status: 403 })
+    }
     const sb = communityClient()
 
     const { data: challenges, error } = await sb
@@ -48,22 +53,40 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     const sb = communityClient()
 
     const { data: membership } = await sb.from("circle_members").select("role, status").eq("circle_id", id).eq("user_id", user.id).maybeSingle()
-    if (membership?.status !== "active") return NextResponse.json({ error: "Join the community first" }, { status: 403 })
+    if (!membership || !["active", "approved"].includes(String(membership.status))) {
+      return NextResponse.json({ error: "Join the Circle first" }, { status: 403 })
+    }
 
     const body = await request.json()
-    const { title, description = "", challenge_type = "standard", reward_coins = 0, starts_at, ends_at } = body
-    if (!title || !title.trim()) return NextResponse.json({ error: "Challenge needs a title" }, { status: 400 })
+    const title = typeof body.title === "string" ? body.title.trim() : ""
+    const description = typeof body.description === "string" ? body.description.trim() : ""
+    const requestedType = typeof body.challenge_type === "string" ? body.challenge_type.trim() : "creative"
+    const allowedTypes = new Set(["creative", "photography", "poll", "guessing", "collaborative", "discussion"])
+    if (!title || title.length > 120) return NextResponse.json({ error: "Challenge title must be 1–120 characters" }, { status: 400 })
+    if (description.length > 2000) return NextResponse.json({ error: "Challenge description is too long" }, { status: 400 })
+    if (!allowedTypes.has(requestedType)) return NextResponse.json({ error: "Choose a supported community activity format" }, { status: 400 })
+    const challenge_type = requestedType
+    const reward_coins = 0
+
+    const startDate = body.starts_at ? new Date(body.starts_at) : new Date()
+    const endDate = body.ends_at ? new Date(body.ends_at) : new Date(startDate.getTime() + 7 * 86400000)
+    if (!Number.isFinite(startDate.getTime()) || !Number.isFinite(endDate.getTime()) || endDate <= startDate) {
+      return NextResponse.json({ error: "Choose an end time after the start time" }, { status: 400 })
+    }
+    if (endDate.getTime() <= Date.now()) {
+      return NextResponse.json({ error: "A Drop must end in the future" }, { status: 400 })
+    }
 
     const { data: challenge, error } = await sb
       .from("circle_challenges")
       .insert({
         circle_id: id,
-        title: title.trim().slice(0, 120),
-        description: description.slice(0, 2000),
+        title,
+        description,
         challenge_type,
-        reward_coins: Math.max(0, Number(reward_coins) || 0),
-        starts_at: starts_at ? new Date(starts_at).toISOString() : new Date().toISOString(),
-        ends_at: ends_at ? new Date(ends_at).toISOString() : new Date(Date.now() + 7 * 86400000).toISOString(),
+        reward_coins,
+        starts_at: startDate.toISOString(),
+        ends_at: endDate.toISOString(),
         created_by: user.id,
         status: "active",
       })

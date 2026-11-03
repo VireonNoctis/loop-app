@@ -1,17 +1,17 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { VideoAvatar } from "@/components/cosmetics/video-avatar";
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { Textarea } from "@/components/ui/textarea";
 import { Flag, CheckCircle, XCircle, Eye, User, Calendar, Filter } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import { useAuth } from "@/hooks/use-auth";
-
-import { createClient } from "@/lib/supabase";
 
 interface ContentFlag {
   id: string;
@@ -40,39 +40,26 @@ export function ContentModerationControl() {
   const [loading, setLoading] = useState(true);
   const [filterStatus, setFilterStatus] = useState('pending');
   const [processing, setProcessing] = useState<string | null>(null);
+  const [suspendFlag, setSuspendFlag] = useState<ContentFlag | null>(null);
+  const [suspensionReason, setSuspensionReason] = useState("");
+  const hasLoadedModerationQueue = useRef(false);
 
   useEffect(() => {
-    fetchContentFlags();
+    void fetchContentFlags()
 
-    // Setup Supabase Realtime for instant moderation reports
-    const supabase = createClient(
-      process.env.NEXT_PUBLIC_SUPABASE_URL || "",
-      process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || ""
-    );
+    // The browser uses the authenticated moderation API rather than a public
+    // Supabase table subscription. This keeps report evidence behind the
+    // server-side moderator check while still refreshing the queue frequently.
+    const refreshInterval = window.setInterval(() => {
+      void fetchContentFlags()
+    }, 20_000)
 
-    const channel = supabase
-      .channel("realtime:content_flags")
-      .on(
-        "postgres_changes",
-        { event: "*", schema: "public", table: "content_flags" },
-        (payload) => {
-          toast({
-            title: "Real-time Report Update 🚩",
-            description: "A new content report or flag status change occurred.",
-          });
-          fetchContentFlags();
-        }
-      )
-      .subscribe();
-
-    return () => {
-      supabase.removeChannel(channel);
-    };
+    return () => window.clearInterval(refreshInterval)
   }, [filterStatus]);
 
   const fetchContentFlags = async () => {
     try {
-      setLoading(true);
+      if (!hasLoadedModerationQueue.current) setLoading(true);
       const response = await fetch(`/api/moderation/flags?status=${filterStatus}`, {
         headers: getAuthHeader(),
       });
@@ -91,6 +78,7 @@ export function ContentModerationControl() {
         variant: "destructive",
       });
     } finally {
+      hasLoadedModerationQueue.current = true;
       setLoading(false);
     }
   };
@@ -125,7 +113,7 @@ export function ContentModerationControl() {
     }
   }
 
-  const updateFlagStatus = async (flagId: string, status: string, action: string) => {
+  const updateFlagStatus = async (flagId: string, status: string, action: string, moderatorNotes?: string): Promise<boolean> => {
     try {
       setProcessing(flagId);
       const response = await fetch(`/api/moderation/flags/${flagId}`, {
@@ -134,7 +122,7 @@ export function ContentModerationControl() {
           'Content-Type': 'application/json',
           ...getAuthHeader(),
         },
-        body: JSON.stringify({ status, action_taken: action }),
+        body: JSON.stringify({ status, action_taken: action, moderator_notes: moderatorNotes }),
       });
       
       const data = await response.json();
@@ -146,6 +134,7 @@ export function ContentModerationControl() {
         });
         // Refresh the flags
         fetchContentFlags();
+        return true;
       } else {
         throw new Error(data.error || "Failed to update flag");
       }
@@ -153,9 +142,10 @@ export function ContentModerationControl() {
       console.error('Error updating flag status:', error);
       toast({
         title: "Error",
-        description: "Failed to update flag status",
+        description: error instanceof Error ? error.message : "Failed to update flag status",
         variant: "destructive",
       });
+      return false;
     } finally {
       setProcessing(null);
     }
@@ -267,30 +257,37 @@ export function ContentModerationControl() {
                     </div>
                     
                     <div className="flex flex-col space-y-2">
-                      {flag.status === 'pending' && (
+                      {flag.status === "pending" && (
                         <>
-                          <Button
-                            size="sm"
-                            variant="destructive"
-                            onClick={() => deleteReportedContent(flag)}
-                            disabled={processing === flag.id}
-                          >
-                            <CheckCircle className="h-4 w-4 mr-1" />
-                            Delete Post
-                          </Button>
+                          {["loop", "circle_post", "comment", "reels", "reel", "moment"].includes(flag.content_type) && (
+                            <Button
+                              size="sm"
+                              variant="destructive"
+                              onClick={() => deleteReportedContent(flag)}
+                              disabled={processing === flag.id}
+                            >
+                              <CheckCircle className="h-4 w-4 mr-1" />
+                              Remove content
+                            </Button>
+                          )}
+                          {flag.content_type === "profile" && (
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              onClick={() => {
+                                setSuspendFlag(flag)
+                                setSuspensionReason("")
+                              }}
+                              disabled={processing === flag.id}
+                            >
+                              <User className="h-4 w-4 mr-1" />
+                              Suspend account
+                            </Button>
+                          )}
                           <Button
                             size="sm"
                             variant="outline"
-                            onClick={() => updateFlagStatus(flag.id, 'resolved', 'user_suspended')}
-                            disabled={processing === flag.id}
-                          >
-                            <User className="h-4 w-4 mr-1" />
-                            Suspend User
-                          </Button>
-                          <Button
-                            size="sm"
-                            variant="outline"
-                            onClick={() => updateFlagStatus(flag.id, 'dismissed', 'warning')}
+                            onClick={() => updateFlagStatus(flag.id, "dismissed", "none")}
                             disabled={processing === flag.id}
                           >
                             <XCircle className="h-4 w-4 mr-1" />
@@ -299,15 +296,16 @@ export function ContentModerationControl() {
                         </>
                       )}
                       
-                      {flag.status === 'reviewed' && (                          <Button
-                            size="sm"
-                            variant="destructive"
-                            onClick={() => deleteReportedContent(flag)}
-                            disabled={processing === flag.id}
-                          >
-                            <CheckCircle className="h-4 w-4 mr-1" />
-                            Delete & Resolve
-                          </Button>
+                      {flag.status === "reviewed" && ["loop", "circle_post", "comment", "reels", "reel", "moment"].includes(flag.content_type) && (
+                        <Button
+                          size="sm"
+                          variant="destructive"
+                          onClick={() => deleteReportedContent(flag)}
+                          disabled={processing === flag.id}
+                        >
+                          <CheckCircle className="h-4 w-4 mr-1" />
+                          Remove content
+                        </Button>
                       )}
                     </div>
                   </div>
@@ -317,6 +315,48 @@ export function ContentModerationControl() {
           )}
         </CardContent>
       </Card>
+
+      <Dialog open={Boolean(suspendFlag)} onOpenChange={(open) => {
+        if (!open) {
+          setSuspendFlag(null)
+          setSuspensionReason("")
+        }
+      }}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Suspend reported account</DialogTitle>
+            <DialogDescription>
+              This suspends the reported profile until the moderation team lifts the suspension. The reason is recorded for the account appeal process.
+            </DialogDescription>
+          </DialogHeader>
+          <Textarea
+            value={suspensionReason}
+            onChange={(event) => setSuspensionReason(event.target.value)}
+            maxLength={1000}
+            rows={4}
+            placeholder="Explain the policy reason for this suspension..."
+          />
+          <p className="text-right text-xs text-muted-foreground">{suspensionReason.length}/1000</p>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setSuspendFlag(null)}>Cancel</Button>
+            <Button
+              variant="destructive"
+              disabled={!suspendFlag || !suspensionReason.trim() || processing === suspendFlag.id}
+              onClick={async () => {
+                if (!suspendFlag) return
+                const target = suspendFlag
+                const success = await updateFlagStatus(target.id, "resolved", "user_suspended", suspensionReason)
+                if (success) {
+                  setSuspendFlag(null)
+                  setSuspensionReason("")
+                }
+              }}
+            >
+              Confirm suspension
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

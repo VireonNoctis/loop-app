@@ -3,6 +3,8 @@
 import { useEffect, useMemo, useRef, useState } from "react"
 import { useRouter } from "next/navigation"
 import { Button } from "@/components/ui/button"
+import { DynamicButton } from "@/components/ui/dynamic-button"
+import { MagneticDropZone } from "@/components/ui/magnetic-drop-zone"
 import { Card, CardContent } from "@/components/ui/card"
 import { Textarea } from "@/components/ui/textarea"
 import { Input } from "@/components/ui/input"
@@ -37,6 +39,7 @@ import {
   Swords,
   Zap,
 } from "lucide-react"
+import ArrowNarrowRightIcon from "@/components/icons/animated/arrow-narrow-right-icon"
 import { CreateDuelDialog } from "@/components/duels/create-duel-dialog"
 import { CreateClutchDuelDialog } from "@/components/duels/create-clutch-duel-dialog"
 
@@ -348,8 +351,7 @@ export function CreateLoopButton({ onLoopCreated, defaultOpen = false, isFab = f
     }
   }
 
-  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const selected = Array.from(e.target.files || [])
+  const handleSelectedFiles = (selected: File[]) => {
     if (!selected.length) return
     const maxFiles = getMaxFiles()
     const combined = [...mediaFiles, ...selected].slice(0, maxFiles)
@@ -365,6 +367,10 @@ export function CreateLoopButton({ onLoopCreated, defaultOpen = false, isFab = f
     else if (first.type.startsWith("video/")) setMediaType("video")
     else if (first.type.startsWith("audio/")) setMediaType("audio")
     else setMediaType("code")
+  }
+
+  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    handleSelectedFiles(Array.from(e.target.files || []))
     e.target.value = ""
   }
 
@@ -748,7 +754,8 @@ export function CreateLoopButton({ onLoopCreated, defaultOpen = false, isFab = f
                 </p>
               ) : (
                 <>
-                  <label className="flex cursor-pointer flex-col items-center gap-2 text-sm text-muted-foreground border border-dashed border-border rounded-2xl p-4 hover:bg-muted/60 transition-colors">
+                  <MagneticDropZone onFiles={handleSelectedFiles}>
+                    <label className="flex cursor-pointer flex-col items-center gap-2 text-sm text-muted-foreground border border-dashed border-border rounded-2xl p-4 hover:bg-muted/60 transition-colors">
                     <Upload className="h-5 w-5 text-violet-400" />
                     <span>Upload media ({getMaxFiles()} file limit{user?.is_premium ? " · Pro" : ""})</span>
                     <input
@@ -759,6 +766,7 @@ export function CreateLoopButton({ onLoopCreated, defaultOpen = false, isFab = f
                       onChange={handleFileChange}
                     />
                   </label>
+                  </MagneticDropZone>
                   {(mediaType === "audio" || mediaType === "text") && (
                     <div className="mt-3 flex justify-center">
                       <Button
@@ -856,13 +864,16 @@ export function CreateLoopButton({ onLoopCreated, defaultOpen = false, isFab = f
                 <Button type="button" variant="outline" className="border-border" onClick={() => setDiscardOpen(true)}>
                   Cancel
                 </Button>
-                <Button
+                <DynamicButton
                   type="submit"
+                  feedback="press"
+                  stateKey={creating ? uploadStatus || "publishing" : "create"}
+                  icon={creating ? <span className="h-4 w-4 animate-spin rounded-full border-2 border-current border-r-transparent" /> : <ArrowNarrowRightIcon size={16} /> }
                   disabled={creating || (!content.trim() && mediaFiles.length === 0)}
-                  className="bg-gradient-to-r from-violet-600 to-cyan-500 shadow-lg shadow-violet-900/30 hover:from-violet-500 hover:to-cyan-400"
+                  className="bg-primary text-primary-foreground shadow-sm hover:bg-primary/90"
                 >
                   {creating ? uploadStatus || "Publishing..." : "Create Loop"}
-                </Button>
+                </DynamicButton>
               </div>
             </div>
           </form>

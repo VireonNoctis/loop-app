@@ -83,7 +83,7 @@ function SignupContent() {
 
     try {
       await signup(email, password, username, displayName, false, referrerUsername)
-      router.push("/onboarding")
+      router.push(`/legal/consent?returnTo=${encodeURIComponent("/onboarding")}`)
     } catch (err: any) {
       setError(err.message || "Failed to create account")
     } finally {
@@ -95,7 +95,7 @@ function SignupContent() {
     setLoading(true)
     setError("")
     try {
-      await googleSignIn()
+      await googleSignIn(`${window.location.origin}/legal/consent?returnTo=${encodeURIComponent("/onboarding")}`)
     } catch (err: any) {
       setError(
         googleEnabled === false
@@ -273,6 +273,9 @@ function SignupContent() {
               )}
             </div>
 
+            <p className="text-xs leading-relaxed text-muted-foreground">
+              Before your first session, you’ll confirm the current Terms of Service and Privacy Policy.
+            </p>
             <Button
               type="submit"
               className="w-full h-11 rounded-xl bg-gradient-to-r from-violet-600 to-cyan-600 dark:from-violet-500 dark:to-cyan-500 text-white font-semibold shadow-lg shadow-violet-500/25 hover:from-violet-500 hover:to-cyan-500 transition-all duration-200 group mt-2"

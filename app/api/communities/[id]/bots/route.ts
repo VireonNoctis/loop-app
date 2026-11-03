@@ -1,6 +1,7 @@
 import { type NextRequest, NextResponse } from "next/server"
 import { createServerClient } from "@/lib/supabase"
 import { getUserFromRequest } from "@/lib/server-auth"
+import { checkCirclePrivateAccess } from "@/lib/circle-access"
 import { isCommunityMember, canModerateCommunity, newBotToken, logBotActivity, type BotRow } from "@/lib/bot-helpers"
 
 export const dynamic = "force-dynamic"
@@ -9,6 +10,11 @@ export const dynamic = "force-dynamic"
 export async function GET(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   try {
     const { id: communityId } = await params
+    const access = await checkCirclePrivateAccess(communityId, request.headers.get("authorization"))
+    if (access.isPrivate && !access.canView) {
+      return NextResponse.json({ error: "This Circle is private", locked: true }, { status: 403 })
+    }
+
     const supabase = createServerClient()
     const currentUser = await getUserFromRequest(request)
 

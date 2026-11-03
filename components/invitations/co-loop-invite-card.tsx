@@ -17,8 +17,9 @@ interface CoLoopInviteCardProps {
   inviterName?: string
   inviterAvatar?: string
   createdAt?: string | Date
-  initialStatus?: "pending" | "accepted" | "declined"
-  onStatusChange?: (newStatus: "accepted" | "declined") => void
+  expiresAt?: string | Date
+  initialStatus?: "pending" | "accepted" | "declined" | "expired"
+  onStatusChange?: (newStatus: "accepted" | "declined" | "expired") => void
   isSender?: boolean
 }
 
@@ -30,11 +31,12 @@ export function CoLoopInviteCard({
   inviterName = "Creator",
   inviterAvatar,
   createdAt = new Date(),
+  expiresAt,
   initialStatus = "pending",
   onStatusChange,
   isSender = false,
 }: CoLoopInviteCardProps) {
-  const [status, setStatus] = useState<"pending" | "accepted" | "declined">(initialStatus)
+  const [status, setStatus] = useState<"pending" | "accepted" | "declined" | "expired">(initialStatus)
   const [loadingAction, setLoadingAction] = useState<"accept" | "decline" | null>(null)
   const { user, getAuthHeader } = useAuth()
   const { toast } = useToast()
@@ -45,7 +47,7 @@ export function CoLoopInviteCard({
 
     const channel = supabase
       .channel(`co-loop-invite:${sessionId}`)
-      .on("broadcast", { event: "invite_status" }, (payload: { payload?: { sessionId?: string; status?: "pending" | "accepted" | "declined" } }) => {
+      .on("broadcast", { event: "invite_status" }, (payload: { payload?: { sessionId?: string; status?: "pending" | "accepted" | "declined" | "expired" } }) => {
         if (payload.payload?.sessionId === sessionId && payload.payload?.status) {
           setStatus(payload.payload.status)
         }
@@ -60,7 +62,8 @@ export function CoLoopInviteCard({
   const handleResponse = async (action: "accepted" | "declined") => {
     setLoadingAction(action === "accepted" ? "accept" : "decline")
     try {
-      // Call backend API to persist invitation status
+      // The server verifies the signed-in invitee and broadcasts the
+      // persisted response. Never let the browser broadcast an unverified status.
       const res = await fetch("/api/co-loop/invitation", {
         method: "POST",
         headers: {
@@ -73,14 +76,17 @@ export function CoLoopInviteCard({
           status: action,
         }),
       })
-
-      // Broadcast update on Supabase Realtime channel
-      const channel = supabase.channel(`co-loop-invite:${sessionId}`)
-      await channel.send({
-        type: "broadcast",
-        event: "invite_status",
-        payload: { sessionId, status: action, userId: user?.id },
-      })
+      const result = await res.json().catch(() => ({}))
+      if (res.status === 410 || result.expired === true) {
+        setStatus("expired")
+        onStatusChange?.("expired")
+        toast({
+          title: "Invitation expired",
+          description: result.error || "Ask the host to send a new invitation.",
+        })
+        return
+      }
+      if (!res.ok) throw new Error(result.error || "Could not update this invitation")
 
       setStatus(action)
       if (onStatusChange) onStatusChange(action)
@@ -157,6 +163,11 @@ export function CoLoopInviteCard({
           ? `You invited ${inviterName} to co-author a loop live.`
           : `${inviterName} invited you to co-author a loop in real time!`}
       </p>
+      {status === "pending" && expiresAt && (
+        <p className="text-[11px] text-cyan-200/80">
+          Expires {new Date(expiresAt).toLocaleString()}
+        </p>
+      )}
 
       {/* Interactive Actions / Status Badge */}
       {status === "pending" ? (
@@ -211,6 +222,12 @@ export function CoLoopInviteCard({
               Enter Co-Loop Studio →
             </Link>
           </Button>
+        </div>
+      ) : status === "expired" ? (
+        <div className="flex items-center justify-between rounded-xl border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-200">
+          <span className="flex items-center gap-1.5 font-medium">
+            <X className="h-3.5 w-3.5" /> Invitation Expired
+          </span>
         </div>
       ) : (
         <div className="flex items-center justify-between rounded-xl bg-rose-500/15 border border-rose-500/30 px-3 py-2 text-xs text-rose-300">

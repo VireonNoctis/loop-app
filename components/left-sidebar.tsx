@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useEffect, useId, type ComponentType } from "react"
+import { useState, useEffect, useId } from "react"
 import Link from "next/link"
 import { usePathname } from "next/navigation"
 import { AppLogo } from "@/components/brand/app-logo"
@@ -10,25 +10,25 @@ import { AvatarWithFrame } from "@/components/ui/avatar-with-frame"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { ScrollArea } from "@/components/ui/scroll-area"
-import {
-  Home,
-  Radio,
-  Calendar,
-  Users,
-  Coins,
-  Bookmark,
-  Shield,
-  Zap,
-  LogOut,
-  Flame,
-  Compass,
-  DollarSign,
-  Code2,
-  UserPlus,
-  Lock,
-  Building2,
-  ChevronDown,
-} from "lucide-react"
+import { ChevronDown, Flame, LogOut } from "lucide-react"
+import { AnimatedIconView } from "@/components/icons/animated/animated-icon-view"
+import type { AnimatedIconComponent } from "@/components/icons/animated/animated-icon-view"
+import HomeIcon from "@/components/icons/animated/home-icon"
+import MagnifierIcon from "@/components/icons/animated/magnifier-icon"
+import PenIcon from "@/components/icons/animated/pen-icon"
+import UsersIcon from "@/components/icons/animated/users-icon"
+import MessageCircleIcon from "@/components/icons/animated/message-circle-icon"
+import RadioIcon from "@/components/icons/animated/radio-icon"
+import WalletIcon from "@/components/icons/animated/wallet-icon"
+import CodeIcon from "@/components/icons/animated/code-icon"
+import ChartLineIcon from "@/components/icons/animated/chart-line-icon"
+import ClockIcon from "@/components/icons/animated/clock-icon"
+import BookmarkIcon from "@/components/icons/animated/bookmark-icon"
+import UserPlusIcon from "@/components/icons/animated/user-plus-icon"
+import LockIcon from "@/components/icons/animated/lock-icon"
+import UsersGroupIcon from "@/components/icons/animated/users-group-icon"
+import ShieldCheckIcon from "@/components/icons/animated/shield-check"
+import FlameIcon from "@/components/icons/animated/flame-icon"
 import { UserBadges } from "@/components/user-badge"
 import {
   primarySidebarNav,
@@ -50,22 +50,26 @@ import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sh
 
 /** Icons live here rather than in the nav model so `lib/sidebar-nav` stays free
  *  of React and the "no destination lost" rules can be unit tested. */
-const NAV_ICONS: Record<string, ComponentType<{ className?: string }>> = {
-  "/": Home,
-  "/explore": Compass,
-  "/communities": Users,
-  "/streams": Radio,
-  "/wallet": Coins,
-  "/co-loop/studio": Zap,
-  "/earnings": DollarSign,
-  "/developers": Code2,
-  "/events": Calendar,
-  "/bookmarks": Bookmark,
-  "/invite": UserPlus,
-  "/lounge": Lock,
-  "/organization": Building2,
-  "/loopadmin": Shield,
-  "/team": Shield,
+const NAV_ICONS: Record<string, AnimatedIconComponent> = {
+  "/": HomeIcon,
+  "/explore": MagnifierIcon,
+  "/create": PenIcon,
+  "/communities": UsersIcon,
+  "/messages": MessageCircleIcon,
+  "/streams": RadioIcon,
+  "/wallet": WalletIcon,
+  "/co-loop/studio": CodeIcon,
+  "/earnings": ChartLineIcon,
+  "/developers": CodeIcon,
+  "/events": ClockIcon,
+  "/drops": FlameIcon,
+  "/bookmarks": BookmarkIcon,
+  "/collections": BookmarkIcon,
+  "/invite": UserPlusIcon,
+  "/lounge": LockIcon,
+  "/organization": UsersGroupIcon,
+  "/loopadmin": ShieldCheckIcon,
+  "/team": UsersIcon,
 }
 
 /** Guides the new-user tour to real elements. */
@@ -126,7 +130,7 @@ export function SidebarContent({ onLinkClick }: { onLinkClick?: () => void }) {
 
   if (!user) return null
 
-  const isAdmin = user.is_admin || user.email === "useehamza0@gmail.com"
+  const isAdmin = Boolean(user.staff_role || user.is_admin || user.is_moderator)
 
   const audience: SidebarAudience = {
     isPremium: Boolean(user.is_premium),
@@ -172,7 +176,7 @@ export function SidebarContent({ onLinkClick }: { onLinkClick?: () => void }) {
                   className={`flex items-center justify-between rounded-xl px-3 py-2.5 text-xs font-semibold transition-all ${navItemClasses(item.href, isActive)}`}
                 >
                   <div className="flex items-center gap-3">
-                    {Icon ? <Icon className="h-4 w-4" /> : null}
+                    {Icon ? <AnimatedIconView component={Icon} size={16} className="h-4 w-4" /> : null}
                     <span>{item.label}</span>
                   </div>
                   {item.badge ? (
@@ -228,7 +232,7 @@ export function SidebarContent({ onLinkClick }: { onLinkClick?: () => void }) {
                       className={`flex items-center justify-between rounded-xl px-3 py-2.5 text-xs font-semibold transition-all ${navItemClasses(item.href, isActive)}`}
                     >
                       <div className="flex items-center gap-3">
-                        {Icon ? <Icon className="h-4 w-4" /> : null}
+                        {Icon ? <AnimatedIconView component={Icon} size={16} className="h-4 w-4" /> : null}
                         <span>{item.label}</span>
                       </div>
                       {item.badge ? (
@@ -352,6 +356,8 @@ export function SidebarContent({ onLinkClick }: { onLinkClick?: () => void }) {
 
 export function LeftSidebar() {
   const { user } = useAuth()
+  const pathname = usePathname()
+  if ([ "/legal/consent", "/terms", "/privacy" ].some((route) => pathname === route || pathname.startsWith(`${route}/`))) return null
   if (!user) return null
 
   return (

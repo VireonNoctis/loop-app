@@ -63,20 +63,15 @@ export function ResponsiveGrid({
 }: ResponsiveGridProps) {
   const { screenSize } = useResponsiveClasses()
 
-  const gridClassName = cn(
-    'grid',
-    screenSize.isMobile && `grid-cols-${cols.mobile}`,
-    screenSize.isTablet && `grid-cols-${cols.tablet}`,
-    screenSize.isDesktop && `grid-cols-${cols.desktop}`,
-    className
-  )
-
-  const gridStyle = {
-    gap: screenSize.isMobile ? gap.mobile : screenSize.isTablet ? gap.tablet : gap.desktop
-  }
+  const columns = screenSize.isMobile ? cols.mobile ?? 1 : screenSize.isTablet ? cols.tablet ?? 2 : cols.desktop ?? 3
+  const safeColumns = Math.min(12, Math.max(1, Math.floor(columns)))
+  const responsiveGap = screenSize.isMobile ? gap.mobile ?? "0.75rem" : screenSize.isTablet ? gap.tablet ?? "1rem" : gap.desktop ?? "1.5rem"
 
   return (
-    <div className={gridClassName} style={gridStyle}>
+    <div
+      className={cn("grid min-w-0 loop-responsive-grid", className)}
+      style={{ gap: responsiveGap, gridTemplateColumns: `repeat(${safeColumns}, minmax(0, 1fr))` }}
+    >
       {children}
     </div>
   )

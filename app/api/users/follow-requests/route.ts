@@ -1,6 +1,7 @@
 import { type NextRequest, NextResponse } from "next/server"
 import { createServerClient } from "@/lib/supabase"
-import { getUserFromRequest } from "@/lib/server-auth";
+import { getUserFromRequest } from "@/lib/server-auth"
+import { checkBlockStatus } from "@/lib/user-blocks"
 
 export const dynamic = "force-dynamic"
 
@@ -30,6 +31,11 @@ export async function GET(request: NextRequest) {
         .eq("status", "pending")
         .order("created_at", { ascending: false }),
     ])
+
+    if (incomingRes.error || outgoingRes.error) {
+      console.error("Follow request list query failed:", incomingRes.error || outgoingRes.error)
+      return NextResponse.json({ error: "Could not load follow requests" }, { status: 500 })
+    }
 
     return NextResponse.json({
       success: true,
@@ -81,7 +87,11 @@ export async function POST(request: NextRequest) {
         .eq("status", "pending")
       if (requestId) query = query.eq("id", requestId)
       if (targetUserId) query = query.eq("target_id", targetUserId)
-      await query
+      const { error: withdrawError } = await query
+      if (withdrawError) {
+        console.error("Follow request withdrawal failed:", withdrawError)
+        return NextResponse.json({ error: "Could not withdraw follow request" }, { status: 500 })
+      }
       return NextResponse.json({ success: true, action })
     }
 
@@ -101,6 +111,18 @@ export async function POST(request: NextRequest) {
       }
       if (followRequest.status !== "pending") {
         return NextResponse.json({ success: true, message: "Already handled" })
+      }
+
+      const blockStatus = await checkBlockStatus(
+        supabase,
+        followRequest.requester_id,
+        followRequest.target_id,
+      )
+      if (blockStatus.blocked) {
+        return NextResponse.json(
+          { error: "This request cannot be accepted while either account blocks the other." },
+          { status: 403 },
+        )
       }
 
       const { data: existing } = await supabase
@@ -127,10 +149,17 @@ export async function POST(request: NextRequest) {
         }
       }
 
-      await supabase
+      const { error: approveError } = await supabase
         .from("follow_requests")
         .update({ status: "approved", updated_at: new Date().toISOString() })
         .eq("id", requestId)
+        .eq("target_id", user.id)
+        .eq("status", "pending")
+
+      if (approveError) {
+        console.error("Approve follow request failed:", approveError)
+        return NextResponse.json({ error: "Could not accept follow request" }, { status: 500 })
+      }
 
       try {
         const { notifyUser } = await import("@/lib/notifications")
@@ -160,10 +189,16 @@ export async function POST(request: NextRequest) {
       if (followRequest.target_id !== user.id) {
         return NextResponse.json({ error: "You can only decline requests sent to you" }, { status: 403 })
       }
-      await supabase
+      const { error: declineError } = await supabase
         .from("follow_requests")
         .update({ status: "declined", updated_at: new Date().toISOString() })
         .eq("id", requestId)
+        .eq("target_id", user.id)
+        .eq("status", "pending")
+      if (declineError) {
+        console.error("Decline follow request failed:", declineError)
+        return NextResponse.json({ error: "Could not decline follow request" }, { status: 500 })
+      }
       return NextResponse.json({ success: true, action: "declined" })
     }
 

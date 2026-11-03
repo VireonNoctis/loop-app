@@ -29,7 +29,7 @@ export default function LoopAdminPage() {
     return <PageLoading message="Redirecting to login…" />
   }
 
-  if (!user.is_admin) {
+  if (!user.staff_role && !user.is_admin && !user.is_moderator) {
     return (
       <div className="min-h-screen bg-background text-foreground">
         <Header />
@@ -37,9 +37,7 @@ export default function LoopAdminPage() {
           <Shield className="h-12 w-12 text-muted-foreground" />
           <h1 className="text-2xl font-bold">Admins only</h1>
           <p className="text-muted-foreground">
-            Your account does not have app admin access. Ask an existing admin to set{" "}
-            <code className="rounded bg-muted px-1.5 py-0.5 text-xs">is_admin = true</code> on your
-            profile, then sign out and back in.
+            Your account does not have dashboard access. Ask a Developer or Admin to assign a staff role.
           </p>
           <Button asChild variant="outline">
             <Link href="/">Back home</Link>

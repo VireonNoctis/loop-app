@@ -5,7 +5,7 @@ import Link from "next/link"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Card, CardContent } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
-import { Clock, TreePine, Zap, TrendingUp, Hash, RefreshCw } from "lucide-react"
+import { Clock, GitBranch, TreePine, Zap, TrendingUp, Hash, RefreshCw, Users, Sparkles } from "lucide-react"
 import { LoopCard } from "@/components/loop-card"
 import { useAuth } from "@/hooks/use-auth"
 import { useToast } from "@/hooks/use-toast"
@@ -20,8 +20,10 @@ import { ParticipationDiscovery } from "@/components/explore/participation-disco
 import { ExploreSearchAutocomplete } from "@/components/explore/explore-search-autocomplete"
 import { Calendar } from "lucide-react"
 import { Spinner } from "@/components/ui/skeletons"
+import { ExploreSearchResults } from "@/components/explore/explore-search-results"
+import { DiscoveryPreferencesPanel } from "@/components/explore/discovery-preferences-panel"
 
-type ExploreTab = "events" | "recent" | "deepest" | "creative" | "hashtags"
+type ExploreTab = "events" | "recent" | "personalized" | "following" | "community" | "deepest" | "creative" | "hashtags"
 
 interface TrendingHashtag {
   tag: string
@@ -30,20 +32,45 @@ interface TrendingHashtag {
   growth?: string | number
 }
 
-export function ExploreContent() {
+interface CollaborativeChain {
+  id: string
+  title: string
+  description: string
+  prompt: string
+  kind: string
+  creator_display_name: string
+  creator_username: string
+  contribution_count: number
+  participant_count: number
+  updated_at: string
+}
+
+export function ExploreContent({ initialTab = "recent" }: { initialTab?: ExploreTab }) {
   const { user } = useAuth()
   const { toast } = useToast()
   const [loops, setLoops] = useState<NormalizedLoop[]>([])
+  const [chains, setChains] = useState<CollaborativeChain[]>([])
   const [hashtags, setHashtags] = useState<TrendingHashtag[]>([])
   const [loading, setLoading] = useState(true)
-  const [selectedTab, setSelectedTab] = useState<ExploreTab>("recent")
+  const [selectedTab, setSelectedTab] = useState<ExploreTab>(initialTab)
+  const [searchQuery, setSearchQuery] = useState("")
   const [interacting, setInteracting] = useState<string | null>(null)
   const [live, setLive] = useState(false)
+  const [hasMore, setHasMore] = useState(false)
+  const [nextOffset, setNextOffset] = useState(0)
+  const [loadingMore, setLoadingMore] = useState(false)
 
   const authToken = user?.access_token || user?.token || ""
 
-  const fetchExplore = useCallback(async (tab: ExploreTab = selectedTab, silent = false) => {
-    if (!silent) setLoading(true)
+  const fetchExplore = useCallback(async (
+    tab: ExploreTab = selectedTab,
+    silent = false,
+    offset = 0,
+    append = false,
+    preserveOffset = false,
+  ) => {
+    if (!silent && !append) setLoading(true)
+    if (append && !silent) setLoadingMore(true)
     try {
       if (tab === "hashtags") {
         const response = await fetch("/api/explore/trending?type=hashtags&limit=24", { cache: "no-store" })
@@ -52,17 +79,53 @@ export function ExploreContent() {
         const rows: TrendingHashtag[] = data.hashtags || data.data || []
         setHashtags(rows)
         setLoops([])
+        setChains([])
+        setHasMore(false)
+        setNextOffset(0)
         return
       }
 
-      const sort = tab === "deepest" ? "deepest" : tab === "creative" ? "creative" : "recent"
-      const response = await fetch(`/api/explore/trending?type=loops&sort=${sort}&limit=24`, {
+      if (tab === "deepest") {
+        const params = new URLSearchParams({ limit: "24", sort: "contributions" })
+        const response = await fetch(`/api/v1/chains?${params.toString()}`, {
+          headers: authToken ? { Authorization: `Bearer ${authToken}` } : {},
+          cache: "no-store",
+        })
+        const data = await response.json().catch(() => ({}))
+        if (!response.ok) throw new Error(data.message || data.error || "Failed to discover Chains")
+        setChains(Array.isArray(data.chains) ? data.chains : [])
+        setLoops([])
+        setHashtags([])
+        setHasMore(false)
+        setNextOffset(0)
+        return
+      }
+
+      const sort = tab === "creative" ? "creative"
+        : tab === "personalized" ? "personalized"
+          : tab === "following" ? "following"
+          : tab === "community" ? "community"
+            : "recent"
+      const response = await fetch(`/api/explore/trending?type=loops&sort=${sort}&limit=24&offset=${offset}`, {
         headers: authToken ? { Authorization: `Bearer ${authToken}` } : {},
         cache: "no-store",
       })
       const data = await response.json().catch(() => ({}))
       if (!response.ok) throw new Error(data.error || "Failed to load explore")
-      setLoops(normalizeLoops(data.loops || data.data || []))
+      const incoming = normalizeLoops(data.loops || data.data || [])
+      setLoops((previous) => {
+        if (!append) return incoming
+        const merged = new Map(previous.map((loop) => [loop.id, loop]))
+        for (const loop of incoming) merged.set(loop.id, loop)
+        return [...merged.values()]
+      })
+      setHasMore(data.pagination?.has_more === true)
+      if (!preserveOffset) {
+        setNextOffset(Number.isFinite(data.pagination?.next_offset)
+          ? Number(data.pagination.next_offset)
+          : offset + incoming.length)
+      }
+      setChains([])
       setHashtags([])
     } catch (error: any) {
       console.error("Explore fetch error:", error)
@@ -74,7 +137,8 @@ export function ExploreContent() {
         })
       }
     } finally {
-      if (!silent) setLoading(false)
+      if (!silent && !append) setLoading(false)
+      if (append && !silent) setLoadingMore(false)
     }
   }, [authToken, selectedTab, toast])
 
@@ -85,7 +149,7 @@ export function ExploreContent() {
 
   useEffect(() => {
     const supabase = getSupabaseBrowserClient()
-    const refresh = () => void fetchExplore(selectedTab, true)
+    const refresh = () => void fetchExplore(selectedTab, true, 0, true, true)
 
     const loopsChannel = supabase
       .channel("explore:loops")
@@ -176,6 +240,20 @@ export function ExploreContent() {
     return String(num)
   }
 
+  const renderLoadMore = () => hasMore ? (
+    <div className="flex justify-center pt-3">
+      <Button
+        variant="outline"
+        className="min-w-40 rounded-full"
+        disabled={loadingMore || loading}
+        onClick={() => void fetchExplore(selectedTab, false, nextOffset, true)}
+      >
+        {loadingMore ? <Spinner className="mr-2 h-4 w-4" /> : <RefreshCw className="mr-2 h-4 w-4" />}
+        {loadingMore ? "Loading more…" : "Load more"}
+      </Button>
+    </div>
+  ) : null
+
   const renderLoops = (items: NormalizedLoop[], emptyLabel: string) => {
     if (loading) {
       return (
@@ -193,12 +271,19 @@ export function ExploreContent() {
     return (
       <div className="space-y-4">
         {items.map((loop) => (
-          <LoopCard
-            key={loop.id}
-            loop={loop}
-            interacting={interacting}
-            onInteraction={handleInteraction}
-          />
+          <div key={loop.id} className="space-y-2">
+            {loop.discovery_reason && (
+              <div className="flex items-center gap-2 px-1 text-xs text-muted-foreground">
+                <Sparkles className="h-3.5 w-3.5 shrink-0 text-primary" />
+                <span>{loop.discovery_reason}</span>
+              </div>
+            )}
+            <LoopCard
+              loop={loop}
+              interacting={interacting}
+              onInteraction={handleInteraction}
+            />
+          </div>
         ))}
       </div>
     )
@@ -209,10 +294,14 @@ export function ExploreContent() {
       <GlobalEventBanner />
 
       {/* Search Autocomplete */}
-      <ExploreSearchAutocomplete onSearch={(q) => {/* search handled by tabs */}} />
+      <ExploreSearchAutocomplete onSearch={setSearchQuery} />
 
-      {/* Participation discovery — live duels, co-loops, circles, creators */}
-      <ParticipationDiscovery />
+      {searchQuery.trim() ? (
+        <ExploreSearchResults query={searchQuery} onClear={() => setSearchQuery("")} />
+      ) : (
+        <>
+          {/* Participation discovery — live duels, co-loops, circles, creators */}
+          <ParticipationDiscovery />
 
       <div className="flex items-center justify-between gap-3">
         <div className="flex items-center gap-2 text-xs text-muted-foreground">
@@ -226,7 +315,7 @@ export function ExploreContent() {
       </div>
 
       <Tabs value={selectedTab} onValueChange={(value) => setSelectedTab(value as ExploreTab)} className="w-full">
-        <TabsList className="grid h-auto w-full grid-cols-2 gap-1 rounded-2xl border border-border bg-muted/40 p-1 sm:grid-cols-5">
+        <TabsList className="grid h-auto w-full grid-cols-2 gap-1 rounded-2xl border border-border bg-muted/40 p-1 sm:grid-cols-8">
           <TabsTrigger value="events" className="rounded-xl">
             <Calendar className="mr-1.5 h-4 w-4 text-cyan-400" />
             Global Events
@@ -235,9 +324,25 @@ export function ExploreContent() {
             <Clock className="mr-1.5 h-4 w-4" />
             Recent
           </TabsTrigger>
+          {user && (
+            <TabsTrigger value="personalized" className="rounded-xl">
+              <Sparkles className="mr-1.5 h-4 w-4" />
+              For you
+            </TabsTrigger>
+          )}
+          {user && (
+            <TabsTrigger value="following" className="rounded-xl">
+              <Users className="mr-1.5 h-4 w-4" />
+              Following
+            </TabsTrigger>
+          )}
+          <TabsTrigger value="community" className="rounded-xl">
+            <Users className="mr-1.5 h-4 w-4" />
+            From Circles
+          </TabsTrigger>
           <TabsTrigger value="deepest" className="rounded-xl">
             <TreePine className="mr-1.5 h-4 w-4" />
-            Deepest
+            Chains
           </TabsTrigger>
           <TabsTrigger value="creative" className="rounded-xl">
             <Zap className="mr-1.5 h-4 w-4" />
@@ -260,15 +365,88 @@ export function ExploreContent() {
             <Badge variant="secondary">Newest first</Badge>
           </div>
           {renderLoops(loops, "No recent loops yet")}
+          {renderLoadMore()}
+        </TabsContent>
+
+        {user && (
+          <TabsContent value="personalized" className="mt-6 space-y-4">
+            <DiscoveryPreferencesPanel onChanged={() => void fetchExplore("personalized")} />
+            <div className="rounded-2xl border border-primary/15 bg-primary/5 p-4">
+              <div className="flex items-center gap-2 text-sm font-semibold">
+                <Sparkles className="h-4 w-4 text-primary" />
+                A feed shaped by your interests
+              </div>
+              <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
+                Recommendations use topic tags from public Loops you have liked or saved. Private posts are never used as signals or shown here. Latest, Following and From Circles remain available whenever you prefer a different view.
+              </p>
+            </div>
+            {renderLoops(loops, "No interest matches yet. Like or save public Loops with topic tags to build this feed.")}
+          {renderLoadMore()}
+          </TabsContent>
+        )}
+
+        {user && (
+          <TabsContent value="following" className="mt-6 space-y-4">
+            <div className="flex items-center gap-2">
+              <Users className="h-5 w-5 text-primary" />
+              <h2 className="text-xl font-semibold">From people you follow</h2>
+              <Badge variant="secondary">Latest first</Badge>
+            </div>
+            {renderLoops(loops, "No recent public Loops from people you follow yet")}
+          {renderLoadMore()}
+          </TabsContent>
+        )}
+
+        <TabsContent value="community" className="mt-6 space-y-4">
+          <div className="flex items-center gap-2">
+            <Users className="h-5 w-5 text-primary" />
+            <h2 className="text-xl font-semibold">From Circles</h2>
+            <Badge variant="secondary">Public community work</Badge>
+          </div>
+          {renderLoops(loops, "No public Circle Loops found yet")}
+          {renderLoadMore()}
         </TabsContent>
 
         <TabsContent value="deepest" className="mt-6 space-y-4">
-          <div className="flex items-center gap-2">
-            <TreePine className="h-5 w-5 text-emerald-600" />
-            <h2 className="text-xl font-semibold">Deepest Trees</h2>
-            <Badge variant="secondary">Most branches</Badge>
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div className="flex items-center gap-2">
+              <GitBranch className="h-5 w-5 text-primary" />
+              <h2 className="text-xl font-semibold">Collaborative Chains</h2>
+              <Badge variant="secondary">Most contributions</Badge>
+            </div>
+            <Link href="/chains" className="text-xs font-semibold text-primary hover:underline">Explore all Chains</Link>
           </div>
-          {renderLoops(loops, "No branched trees yet")}
+          {loading ? (
+            <div className="flex items-center justify-center py-16 text-muted-foreground">
+              <Spinner className="mr-2 h-5 w-5" /> Loading Chains…
+            </div>
+          ) : chains.length === 0 ? (
+            <EmptyState title="No collaborative Chains yet" icon={<GitBranch className="h-6 w-6" />} />
+          ) : (
+            <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+              {chains.map((chain) => (
+                <Link
+                  key={chain.id}
+                  href={`/chains/${chain.id}`}
+                  className="group flex min-h-48 flex-col rounded-2xl border border-border bg-card p-4 transition-all hover:-translate-y-0.5 hover:border-primary/40 hover:shadow-lg hover:shadow-primary/5"
+                >
+                  <div className="flex items-center justify-between gap-2">
+                    <Badge variant="secondary" className="capitalize">{chain.kind.replace(/_/g, " ")}</Badge>
+                    <GitBranch className="h-4 w-4 text-muted-foreground transition-colors group-hover:text-primary" />
+                  </div>
+                  <h3 className="mt-3 line-clamp-2 text-base font-bold">{chain.title}</h3>
+                  <p className="mt-1 line-clamp-2 text-sm text-muted-foreground">
+                    {chain.prompt || chain.description || "An idea waiting for its next contribution."}
+                  </p>
+                  <div className="mt-auto flex flex-wrap items-center gap-3 border-t border-border pt-3 text-[11px] text-muted-foreground">
+                    <span className="inline-flex items-center gap-1"><GitBranch className="h-3 w-3" /> {chain.contribution_count} contributions</span>
+                    <span className="inline-flex items-center gap-1"><Users className="h-3 w-3" /> {chain.participant_count} people</span>
+                    <span className="ml-auto truncate">by {chain.creator_display_name || chain.creator_username}</span>
+                  </div>
+                </Link>
+              ))}
+            </div>
+          )}
         </TabsContent>
 
         <TabsContent value="creative" className="mt-6 space-y-4">
@@ -278,6 +456,7 @@ export function ExploreContent() {
             <Badge variant="secondary">Highest engagement</Badge>
           </div>
           {renderLoops(loops, "No creative loops yet")}
+          {renderLoadMore()}
         </TabsContent>
 
         <TabsContent value="hashtags" className="mt-6 space-y-4">
@@ -322,6 +501,8 @@ export function ExploreContent() {
           )}
         </TabsContent>
       </Tabs>
+        </>
+      )}
     </div>
   )
 }

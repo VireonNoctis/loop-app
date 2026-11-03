@@ -75,70 +75,85 @@ export async function POST(request: NextRequest) {
     }
 
     if (action === "kick") {
-      if (targetUserId === user.id) {
+      const targetId = typeof targetUserId === "string" ? targetUserId : ""
+      if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(targetId)) {
+        return NextResponse.json({ error: "A valid target_user_id is required" }, { status: 400 })
+      }
+      if (targetId === user.id) {
         return NextResponse.json({ error: "The host can't remove themselves" }, { status: 400 })
       }
 
-      // Remove the join record (so they can't slip back in) and prune them from
-      // the durable roster that the studio, ceremony and gifts read from.
-      const { error: participantError } = await supabase
-        .from("open_co_loop_participants")
+      const { data: kickData, error: kickError } = await supabase.rpc("kick_co_loop_participant", {
+        p_session_id: sessionId,
+        p_owner_id: user.id,
+        p_target_user_id: targetId,
+      })
+      if (kickError) {
+        console.error("Atomic Co-Loop kick failed:", kickError.message)
+        if (kickError.code === "P0002") {
+          return NextResponse.json({ error: "Co-Loop or collaborator not found" }, { status: 404 })
+        }
+        if (kickError.code === "42501") {
+          return NextResponse.json({ error: "Only the host can remove collaborators" }, { status: 403 })
+        }
+        if (kickError.code === "55000") {
+          return NextResponse.json({ error: "This Co-Loop has already been deleted" }, { status: 410 })
+        }
+        if (kickError.code === "22023") {
+          return NextResponse.json({ error: "Invalid collaborator" }, { status: 400 })
+        }
+        if (["42883", "42P01", "42703"].includes(kickError.code || "")) {
+          return NextResponse.json({ error: "Co-Loop moderation is unavailable until the database migration is applied." }, { status: 503 })
+        }
+        return NextResponse.json({ error: "Could not remove that collaborator" }, { status: 500 })
+      }
+
+      const kickResult = (Array.isArray(kickData) ? kickData[0] : kickData) as {
+        target_user_id?: string
+        removed_entry?: unknown
+      } | null
+      if (!kickResult?.target_user_id) {
+        return NextResponse.json({ error: "Collaborator removal returned an invalid result" }, { status: 500 })
+      }
+
+      // Revoke access has already committed. Delivery cleanup is best-effort.
+      const { error: inviteNotificationError } = await supabase
+        .from("notifications")
         .delete()
-        .eq("session_id", sessionId)
-        .eq("user_id", targetUserId)
-      if (participantError) {
-        console.warn("open_co_loop_participants delete failed:", participantError.message)
-      }
+        .eq("user_id", targetId)
+        .eq("type", "co_loop_invite")
+        .filter("data->>session_id", "eq", sessionId)
+      if (inviteNotificationError) console.warn("Kicked collaborator notification cleanup failed:", inviteNotificationError.message)
 
-      const currentCoAuthors = Array.isArray(session.co_authors) ? session.co_authors : []
-      const removed = currentCoAuthors.find((c: any) => c?.id === targetUserId)
-      const nextCoAuthors = currentCoAuthors.filter((c: any) => c?.id !== targetUserId)
+      const { error: inviteMessageError } = await supabase
+        .from("messages")
+        .delete()
+        .eq("recipient_id", targetId)
+        .eq("message_type", "co_loop_invite")
+        .like("media_url", `%session=${encodeURIComponent(sessionId)}%`)
+      if (inviteMessageError) console.warn("Kicked collaborator DM cleanup failed:", inviteMessageError.message)
 
-      const { error: updateError } = await supabase
-        .from("co_loop_sessions")
-        .update({ co_authors: nextCoAuthors, updated_at: new Date().toISOString() })
-        .eq("session_id", sessionId)
-      if (updateError) {
-        console.error("co_loop_sessions kick update failed:", updateError.message)
-        return NextResponse.json({ error: "Could not remove that co-author" }, { status: 500 })
-      }
-
-      // Keep the feed invite card's participant count honest.
-      if (session.feed_post_id) {
-        const nextCount = nextCoAuthors.length + 1
-        const max = session.max_collaborators || 4
-        await supabase
-          .from("loops")
-          .update({
-            content_metadata: {
-              is_open_coloop_invite: true,
-              session_id: sessionId,
-              max_collaborators: max,
-              topic: session.open_invite_topic || "",
-              current_participants: nextCount,
-              status: session.status === "published" ? "published" : nextCount >= max ? "full" : "open",
-            },
-          })
-          .eq("id", session.feed_post_id)
-      }
-
-      // Tell every client to drop them; the removed user gets bounced out.
       try {
         const channel = supabase.channel(`co-loop-studio:${sessionId}`)
         await channel.send({
           type: "broadcast",
           event: "co-author-kicked",
           payload: {
-            user_id: targetUserId,
+            user_id: targetId,
             by: user.user_metadata?.display_name || user.user_metadata?.username || "The host",
-            participant: removed || undefined,
+            participant: kickResult.removed_entry || undefined,
           },
         })
       } catch {
-        // best-effort
+        // The database revoke is durable even if realtime delivery is offline.
       }
 
-      return NextResponse.json({ success: true, session_id: sessionId, kicked: true, target_user_id: targetUserId })
+      return NextResponse.json({
+        success: true,
+        session_id: sessionId,
+        kicked: true,
+        target_user_id: targetId,
+      })
     }
 
     const locked = action === "lock"

@@ -1,0 +1,64 @@
+name: loop-local
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-loop}
+      POSTGRES_USER: ${POSTGRES_USER:-loop}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-loop_dev_only}
+    ports:
+      - "127.0.0.1:54329:5432"
+    volumes:
+      - loop-postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-loop} -d ${POSTGRES_DB:-loop}"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  seaweedfs:
+    image: chrislusf/seaweedfs:4.52
+    command: ["mini", "-dir=/data"]
+    restart: unless-stopped
+    environment:
+      AWS_ACCESS_KEY_ID: loop-local
+      AWS_SECRET_ACCESS_KEY: local-only-change-me
+      S3_BUCKET: loop-dev
+    ports:
+      - "127.0.0.1:8333:8333"
+    volumes:
+      - loop-objects:/data
+
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      seaweedfs:
+        condition: service_started
+    environment:
+      APP_ADDR: 0.0.0.0:8080
+      DATABASE_URL: postgresql://${POSTGRES_USER:-loop}:${POSTGRES_PASSWORD:-loop_dev_only}@postgres:5432/${POSTGRES_DB:-loop}?sslmode=disable
+      DB_MAX_CONNECTIONS: ${DB_MAX_CONNECTIONS:-10}
+      RUN_MIGRATIONS: ${RUN_MIGRATIONS:-true}
+      CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:-http://localhost:3000,http://127.0.0.1:3000}
+      AWS_REGION: ${AWS_REGION:-eu-west-1}
+      AWS_ACCESS_KEY_ID: loop-local
+      AWS_SECRET_ACCESS_KEY: local-only-change-me
+      AWS_EC2_METADATA_DISABLED: "true"
+      S3_BUCKET: loop-dev
+      S3_ENDPOINT_URL: http://seaweedfs:8333
+      S3_FORCE_PATH_STYLE: "true"
+      S3_PRESIGN_TTL_SECONDS: ${S3_PRESIGN_TTL_SECONDS:-300}
+      RUST_LOG: ${RUST_LOG:-loop_api=info,tower_http=info}
+    ports:
+      - "127.0.0.1:8080:8080"
+
+volumes:
+  loop-postgres:
+  loop-objects:

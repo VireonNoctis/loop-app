@@ -3,6 +3,7 @@ import { createClient } from "@/lib/supabase"
 import { circleCreateLimitMessage, getCircleCreateLimit } from "@/lib/circle-limits"
 import { getUserFromRequest } from "@/lib/server-auth"
 import { isProUser } from "@/lib/pro-features"
+import { filterCirclesForViewer } from "@/lib/circle-membership-state"
 
 function createServerClient() {
   const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL
@@ -71,7 +72,7 @@ export async function GET(request: NextRequest) {
         .from("circle_members")
         .select("circle_id, role, status")
         .eq("user_id", user.id)
-        .neq("status", "banned")
+        .in("status", ["active", "approved", "pending"])
 
       if (mine && !joined) {
         membershipQuery = membershipQuery.in("role", ["owner", "admin", "moderator"])
@@ -125,10 +126,40 @@ export async function GET(request: NextRequest) {
       const viewerIsPro = await getViewerProStatus(supabase, user.id)
       return NextResponse.json({
         success: true,
-        circles: filterProCircles(circles, viewerIsPro).map((circle) => normalizeCircle(circle, membershipMap)),
+        circles: filterCirclesForViewer(filterProCircles(circles, viewerIsPro), {
+          viewerId: user.id,
+          viewerIsPro,
+          memberships: membershipMap,
+        }).map((circle) => normalizeCircle(circle, membershipMap)),
         hasMore: false,
       })
     }
+
+    // Resolve private-Circle visibility before paging. Filtering only after a
+    // limited query can let private rows consume the page and starve public
+    // Circles from the browse result.
+    const membershipMap = new Map<string, any>()
+    if (user) {
+      const { data: memberships, error: membershipsError } = await supabase
+        .from("circle_members")
+        .select("circle_id, role, status")
+        .eq("user_id", user.id)
+        .in("status", ["active", "approved", "pending"])
+      if (membershipsError) {
+        return NextResponse.json({ error: "Failed to verify Circle visibility" }, { status: 500 })
+      }
+      memberships?.forEach((membership) => membershipMap.set(membership.circle_id, membership))
+    }
+
+    const visibilityFilters = ["is_private.eq.false", "is_private.is.null"]
+    if (user) {
+      visibilityFilters.push(`owner_id.eq.${user.id}`)
+      const visiblePrivateIds = [...membershipMap.keys()]
+      if (visiblePrivateIds.length) {
+        visibilityFilters.push(`id.in.(${visiblePrivateIds.join(",")})`)
+      }
+    }
+    const visibilityFilter = visibilityFilters.join(",")
 
     let query = supabase
       .from("circles")
@@ -140,14 +171,16 @@ export async function GET(request: NextRequest) {
       `)
       .eq("is_active", true)
       .order("created_at", { ascending: false })
+      .or(visibilityFilter)
 
     if (category && category !== "all") query = query.eq("category", category)
     if (search) query = query.or(`name.ilike.%${search}%,description.ilike.%${search}%`)
 
     let { data: circles, error } = await query.range(offset, offset + limit - 1)
-    // Compat if is_active column missing on older DBs
+    // Compat if is_active column missing on older DBs. Reapply all filters,
+    // particularly the private-Circle visibility constraint.
     if (error?.code === "PGRST204" || /is_active/i.test(error?.message || "")) {
-      ;({ data: circles, error } = await supabase
+      let fallbackQuery = supabase
         .from("circles")
         .select(`
           *,
@@ -156,28 +189,22 @@ export async function GET(request: NextRequest) {
           member_count:circle_members(count)
         `)
         .order("created_at", { ascending: false })
-        .range(offset, offset + limit - 1))
-      if (category && category !== "all") {
-        circles = (circles || []).filter((c: any) => c.category === category)
-      }
+        .or(visibilityFilter)
+      if (category && category !== "all") fallbackQuery = fallbackQuery.eq("category", category)
+      if (search) fallbackQuery = fallbackQuery.or(`name.ilike.%${search}%,description.ilike.%${search}%`)
+      ;({ data: circles, error } = await fallbackQuery.range(offset, offset + limit - 1))
     }
     if (error) {
       console.error("Error fetching circles:", error)
       return NextResponse.json({ error: "Failed to fetch circles" }, { status: 500 })
     }
 
-    const membershipMap = new Map<string, any>()
-    if (user && circles?.length) {
-      const { data: memberships } = await supabase
-        .from("circle_members")
-        .select("circle_id, role, status")
-        .eq("user_id", user.id)
-        .in("circle_id", circles.map((circle) => circle.id))
-      memberships?.forEach((membership) => membershipMap.set(membership.circle_id, membership))
-    }
-
     const viewerIsPro = await getViewerProStatus(supabase, user?.id || null)
-    const visible = filterProCircles(circles, viewerIsPro)
+    const visible = filterCirclesForViewer(filterProCircles(circles, viewerIsPro), {
+      viewerId: user?.id || null,
+      viewerIsPro,
+      memberships: membershipMap,
+    })
 
     return NextResponse.json({
       success: true,
@@ -205,7 +232,7 @@ export async function POST(request: NextRequest) {
         .select("is_admin")
         .eq("id", user.id)
         .maybeSingle()
-      if (!adminProfile?.is_admin && !/admin/i.test(user.email || "")) {
+      if (adminProfile?.is_admin !== true) {
         return NextResponse.json({ error: "Only platform admins can create a Pro-only circle" }, { status: 403 })
       }
     }

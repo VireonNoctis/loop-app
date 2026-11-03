@@ -62,12 +62,21 @@ export function BanAppealsPanel() {
   }, [load])
 
   const review = async (appealId: string, decision: "approve" | "deny") => {
+    const reviewerNote = (notes[appealId] || "").trim()
+    if (decision === "deny" && !reviewerNote) {
+      toast({
+        title: "Reason required",
+        description: "Add a clear reason before denying this appeal.",
+        variant: "destructive",
+      })
+      return
+    }
     setBusyId(appealId)
     try {
       const response = await fetch("/api/admin/ban-appeals", {
         method: "POST",
         headers: { "Content-Type": "application/json", ...getAuthHeader() },
-        body: JSON.stringify({ appeal_id: appealId, decision, admin_notes: notes[appealId] || "" }),
+        body: JSON.stringify({ appeal_id: appealId, decision, admin_notes: reviewerNote }),
       })
       const data = await response.json()
       if (!response.ok) throw new Error(data.error || "Review failed")
@@ -75,6 +84,11 @@ export function BanAppealsPanel() {
         title: decision === "approve" ? "Appeal approved" : "Appeal denied",
         description:
           decision === "approve" ? "The suspension was lifted and the user was notified." : "The user was notified.",
+      })
+      setNotes((current) => {
+        const next = { ...current }
+        delete next[appealId]
+        return next
       })
       await load()
     } catch (error: any) {
@@ -163,8 +177,9 @@ export function BanAppealsPanel() {
                 <div className="flex flex-col gap-2 sm:flex-row">
                   <Input
                     value={notes[appeal.id] || ""}
-                    onChange={(e) => setNotes((n) => ({ ...n, [appeal.id]: e.target.value }))}
-                    placeholder="Optional note to the user (shown if denied)"
+                    onChange={(e) => setNotes((n) => ({ ...n, [appeal.id]: e.target.value.slice(0, 2000) }))}
+                    maxLength={2000}
+                    placeholder="Required reason to deny; optional note on approval"
                     className="flex-1"
                   />
                   <div className="flex gap-2">
@@ -181,7 +196,7 @@ export function BanAppealsPanel() {
                       size="sm"
                       variant="destructive"
                       className="rounded-full"
-                      disabled={busyId === appeal.id}
+                      disabled={busyId === appeal.id || !(notes[appeal.id] || "").trim()}
                       onClick={() => review(appeal.id, "deny")}
                     >
                       <XCircle className="mr-1.5 h-4 w-4" /> Deny
@@ -197,7 +212,7 @@ export function BanAppealsPanel() {
       <Card className="border-dashed">
         <CardContent className="flex items-start gap-3 py-4 text-sm text-muted-foreground">
           <Ban className="mt-0.5 h-4 w-4" />
-          Suspensions are managed from the Users tab (Ban/Unban). Appeals from suspended users land here in real time.
+          Suspensions are managed from the Users tab (Ban/Unban). Appeals submitted by suspended users are reviewed here.
         </CardContent>
       </Card>
     </div>

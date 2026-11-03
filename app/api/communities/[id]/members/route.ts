@@ -1,6 +1,7 @@
 import { type NextRequest, NextResponse } from "next/server"
 import { communityClient, logCommunityActivity, computeReputation, canModerate, canAdmin, isOwnerRole } from "@/lib/community-engine"
 import { getUserFromRequest } from "@/lib/server-auth"
+import { checkCirclePrivateAccess } from "@/lib/circle-access"
 
 const RECOGNITION_KINDS = [
   { kind: "knowledge_keeper", label: "🧠 Knowledge Keeper", message: "For sharing knowledge that sticks." },
@@ -14,30 +15,37 @@ const RECOGNITION_KINDS = [
 export async function GET(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   try {
     const { id } = await params
+    const access = await checkCirclePrivateAccess(id, request.headers.get("authorization"))
+    if (access.isPrivate && !access.canView) {
+      return NextResponse.json({ error: "This Circle is private", locked: true }, { status: 403 })
+    }
     const user = await getUserFromRequest(request)
     const sb = communityClient()
     const { searchParams } = new URL(request.url)
     const roleFilter = searchParams.get("role")
     const search = searchParams.get("search")
-    const limit = Number.parseInt(searchParams.get("limit") || "50")
+    const requestedLimit = Number.parseInt(searchParams.get("limit") || "50")
+    const limit = Number.isFinite(requestedLimit) ? Math.min(100, Math.max(1, requestedLimit)) : 50
 
     let query = sb
       .from("circle_members")
       .select(`
-        *,
-        user:profiles!user_id(id, username, display_name, avatar_url, is_verified, is_premium, is_team_member, is_sponsor)
+        id, circle_id, user_id, role, status, custom_title, joined_at, contribution_score,
+        user:profiles!user_id(id, username, display_name, avatar_url, is_verified)
       `)
       .eq("circle_id", id)
-      .neq("status", "banned")
+      .in("status", ["active", "approved"])
       .order("joined_at", { ascending: false })
       .limit(limit)
 
     if (roleFilter) query = query.eq("role", roleFilter)
     if (search) {
+      const safeSearch = String(search).slice(0, 40).replace(/[^\p{L}\p{N}\s_-]/gu, "")
+      if (!safeSearch.trim()) return NextResponse.json({ members: [] })
       const { data: matchedProfiles } = await sb
         .from("profiles")
         .select("id")
-        .or(`username.ilike.%${search}%,display_name.ilike.%${search}%`)
+        .or(`username.ilike.%${safeSearch}%,display_name.ilike.%${safeSearch}%`)
         .limit(20)
       const ids = (matchedProfiles || []).map((p) => p.id)
       if (ids.length === 0) return NextResponse.json({ members: [] })
@@ -88,8 +96,17 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
     if (!actor) return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
     const sb = communityClient()
 
-    const { data: actorMembership } = await sb.from("circle_members").select("role").eq("circle_id", id).eq("user_id", actor.id).maybeSingle()
-    const actorRole = actorMembership?.role
+    const { data: actorMembership, error: actorMembershipError } = await sb
+      .from("circle_members")
+      .select("role, status")
+      .eq("circle_id", id)
+      .eq("user_id", actor.id)
+      .maybeSingle()
+    if (actorMembershipError) return NextResponse.json({ error: "Could not verify Circle membership" }, { status: 503 })
+    if (!actorMembership || !["active", "approved"].includes(String(actorMembership.status || ""))) {
+      return NextResponse.json({ error: "Active Circle membership is required" }, { status: 403 })
+    }
+    const actorRole = actorMembership.role
 
     const body = await request.json()
     const { user_id, role, status, is_muted, muted_until, custom_title } = body
@@ -214,8 +231,17 @@ export async function DELETE(request: NextRequest, { params }: { params: Promise
     if (!actor) return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
     const sb = communityClient()
 
-    const { data: actorMembership } = await sb.from("circle_members").select("role").eq("circle_id", id).eq("user_id", actor.id).maybeSingle()
-    const actorRole = actorMembership?.role
+    const { data: actorMembership, error: actorMembershipError } = await sb
+      .from("circle_members")
+      .select("role, status")
+      .eq("circle_id", id)
+      .eq("user_id", actor.id)
+      .maybeSingle()
+    if (actorMembershipError) return NextResponse.json({ error: "Could not verify Circle membership" }, { status: 503 })
+    if (!actorMembership || !["active", "approved"].includes(String(actorMembership.status || ""))) {
+      return NextResponse.json({ error: "Active Circle membership is required" }, { status: 403 })
+    }
+    const actorRole = actorMembership.role
     if (!canModerate(actorRole)) {
       return NextResponse.json({ error: "Only moderators and admins can remove members" }, { status: 403 })
     }
@@ -270,8 +296,11 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     if (!actor) return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
     const sb = communityClient()
 
-    const { data: actorMembership } = await sb.from("circle_members").select("role, status").eq("circle_id", id).eq("user_id", actor.id).maybeSingle()
-    if (actorMembership?.status !== "active") return NextResponse.json({ error: "Join the community first" }, { status: 403 })
+    const { data: actorMembership, error: actorMembershipError } = await sb.from("circle_members").select("role, status").eq("circle_id", id).eq("user_id", actor.id).maybeSingle()
+    if (actorMembershipError) return NextResponse.json({ error: "Could not verify Circle membership" }, { status: 503 })
+    if (!actorMembership || !["active", "approved"].includes(String(actorMembership.status || ""))) {
+      return NextResponse.json({ error: "Join the community first" }, { status: 403 })
+    }
 
     const body = await request.json()
     const { user_id, kind, message = "" } = body
@@ -283,8 +312,10 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
       return NextResponse.json({ error: "Unknown recognition" }, { status: 400 })
     }
 
-    const { data: target } = await sb.from("circle_members").select("id").eq("circle_id", id).eq("user_id", user_id).maybeSingle()
-    if (!target) return NextResponse.json({ error: "Member not found" }, { status: 404 })
+    const { data: target } = await sb.from("circle_members").select("id, status").eq("circle_id", id).eq("user_id", user_id).maybeSingle()
+    if (!target || !["active", "approved"].includes(String(target.status || ""))) {
+      return NextResponse.json({ error: "Active member not found" }, { status: 404 })
+    }
 
     const { data: recognition, error } = await sb
       .from("community_recognitions")

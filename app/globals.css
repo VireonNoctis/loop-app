@@ -962,3 +962,82 @@ html.loop-reduced-motion *::after {
     filter: brightness(1.08);
   }
 }
+
+
+/* =============================================
+   LOOP TACTILE CONTROL LAYER
+   A defined face, firm lower edge and short press travel.
+   ============================================= */
+@layer components {
+  .loop-tactile {
+    --loop-tactile-depth: 3px;
+    --loop-tactile-edge: color-mix(
+      in srgb,
+      hsl(var(--foreground)) 20%,
+      hsl(var(--background))
+    );
+    transform: translateY(0);
+    box-shadow:
+      0 var(--loop-tactile-depth) 0 var(--loop-tactile-edge),
+      0 4px 8px rgb(0 0 0 / 0.08);
+    transition:
+      transform 140ms cubic-bezier(0.2, 0.8, 0.2, 1),
+      box-shadow 140ms cubic-bezier(0.2, 0.8, 0.2, 1),
+      background-color 150ms ease,
+      border-color 150ms ease,
+      color 150ms ease;
+    transform-style: preserve-3d;
+    -webkit-tap-highlight-color: transparent;
+  }
+
+  @media (hover: hover) and (pointer: fine) {
+    .loop-tactile:not(:disabled):not([aria-disabled="true"]):hover {
+      transform: translateY(-1px);
+      box-shadow:
+        0 calc(var(--loop-tactile-depth) + 1px) 0 var(--loop-tactile-edge),
+        0 6px 12px rgb(0 0 0 / 0.1);
+    }
+  }
+
+  .loop-tactile:not(:disabled):not([aria-disabled="true"]):active {
+    transform: translateY(calc(var(--loop-tactile-depth) - 1px));
+    box-shadow:
+      0 1px 0 var(--loop-tactile-edge),
+      0 2px 3px rgb(0 0 0 / 0.08);
+  }
+
+  .loop-tactile-flat {
+    --loop-tactile-depth: 0px;
+    box-shadow: none;
+  }
+
+  .loop-tactile-flat:not(:disabled):hover,
+  .loop-tactile-flat:not(:disabled):active {
+    transform: none;
+    box-shadow: none;
+  }
+
+  .loop-tactile:disabled,
+  .loop-tactile[aria-disabled="true"] {
+    transform: none;
+    box-shadow: none;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .loop-tactile {
+      transition: none;
+    }
+  }
+}
+
+
+@keyframes loop-hold-undo-progress {
+  from { transform: scaleX(1); }
+  to { transform: scaleX(0); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .loop-tactile {
+    animation: none !important;
+  }
+}

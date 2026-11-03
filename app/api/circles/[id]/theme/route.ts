@@ -1,6 +1,7 @@
 import { type NextRequest, NextResponse } from "next/server"
 import { createClient } from "@/lib/supabase"
 import { getUserFromRequest } from "@/lib/server-auth"
+import { checkCirclePrivateAccess } from "@/lib/circle-access"
 import { validateThemeConfig, type CircleThemeConfig } from "@/lib/circle-themes"
 
 function createServerClient() {
@@ -11,9 +12,14 @@ function createServerClient() {
 }
 
 /** GET — Fetch the theme_config for a circle */
-export async function GET(_request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+export async function GET(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   try {
     const { id } = await params
+    const access = await checkCirclePrivateAccess(id, request.headers.get("authorization"))
+    if (access.isPrivate && !access.canView) {
+      return NextResponse.json({ error: "This Circle is private", locked: true }, { status: 403 })
+    }
+
     const supabase = createServerClient()
 
     const { data: circle, error } = await supabase

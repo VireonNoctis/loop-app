@@ -1,6 +1,7 @@
 import { type NextRequest, NextResponse } from "next/server"
 import { createServerClient } from "@/lib/supabase"
 import { requireAdmin } from "@/lib/server-auth"
+import { resolveStaffRole } from "@/lib/staff-roles"
 import { maskAdminCopy } from "@/lib/notification-copy"
 import { deleteAccountAsAdmin } from "@/lib/admin-delete-account"
 
@@ -134,7 +135,7 @@ const USER_FIELDS =
 
 export async function POST(request: NextRequest) {
   try {
-    const { user: adminUser, response } = await requireAdmin(request)
+    const { user: adminUser, profile: adminProfile, response } = await requireAdmin(request)
     if (response) return response
     const supabase = createServerClient()
 
@@ -142,6 +143,9 @@ export async function POST(request: NextRequest) {
     const action = String(body.action || "")
     if (!action) {
       return NextResponse.json({ error: "action is required" }, { status: 400 })
+    }
+    if ((action === "make_admin" || action === "remove_admin") && resolveStaffRole(adminProfile) !== "developer") {
+      return NextResponse.json({ error: "Only Developers can change Admin roles" }, { status: 403 })
     }
 
     // Bulk mode: user_ids array applies the same action to many users.
@@ -175,11 +179,49 @@ export async function POST(request: NextRequest) {
     const targets = userIds.length > 0 ? userIds : [singleUserId as string]
     const results: { user_id: string; success: boolean; error?: string; user?: unknown }[] = []
 
+    // Role changes use the same locked database transaction as the Access & Roles
+    // workspace. This keeps audit history and the last-Developer safeguard intact.
+    if (action === "make_admin" || action === "remove_admin") {
+      const roleResults: { user_id: string; success: boolean; error?: string; access?: unknown }[] = []
+      for (const targetId of targets) {
+        const { data: existingGrants, error: grantsError } = await supabase
+          .from("team_permissions")
+          .select("permission_key")
+          .eq("user_id", targetId)
+        if (grantsError) {
+          roleResults.push({ user_id: targetId, success: false, error: "Could not read existing permissions" })
+          continue
+        }
+
+        const { data: access, error: accessError } = await supabase.rpc("admin_update_access", {
+          p_actor_id: adminUser!.id,
+          p_target_id: targetId,
+          p_new_role: action === "make_admin" ? "admin" : "user",
+          p_permissions: (existingGrants || []).map((grant) => grant.permission_key),
+        })
+        if (accessError) {
+          roleResults.push({ user_id: targetId, success: false, error: accessError.message })
+        } else {
+          roleResults.push({ user_id: targetId, success: true, access })
+        }
+      }
+
+      const success = roleResults.every((result) => result.success)
+      return NextResponse.json({ success, results: roleResults }, { status: success ? 200 : 400 })
+    }
+
     for (const userId of targets) {
       try {
         const { data: target } = await supabase.from("profiles").select("*").eq("id", userId).maybeSingle()
         if (!target) {
           results.push({ user_id: userId, success: false, error: "User not found" })
+          continue
+        }
+
+        const actorRole = resolveStaffRole(adminProfile)
+        const targetRole = resolveStaffRole(target)
+        if (actorRole === "admin" && (targetRole === "developer" || targetRole === "admin")) {
+          results.push({ user_id: userId, success: false, error: "Admins cannot modify Developer or Admin accounts" })
           continue
         }
 
@@ -218,10 +260,14 @@ export async function POST(request: NextRequest) {
             updates.is_premium = false
             break
           case "make_admin":
+            updates.staff_role = "admin"
             updates.is_admin = true
+            updates.is_moderator = false
             break
           case "remove_admin":
+            updates.staff_role = null
             updates.is_admin = false
+            updates.is_moderator = false
             break
           case "add_coins": {
             const amount = Math.max(0, Number(body.amount) || 0)

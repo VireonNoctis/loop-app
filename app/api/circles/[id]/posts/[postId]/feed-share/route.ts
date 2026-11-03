@@ -1,5 +1,5 @@
 import { type NextRequest, NextResponse } from "next/server"
-import { createClient } from "@/lib/supabase"
+import { createServerClient } from "@/lib/supabase"
 import { getUserFromRequest } from "@/lib/server-auth"
 import {
   canShareCircle,
@@ -8,10 +8,10 @@ import {
   unsharePostFromFeed,
 } from "@/lib/community-feed-share"
 
-const supabase = createClient(
-  process.env.NEXT_PUBLIC_SUPABASE_URL || "https://placeholder.supabase.co",
-  process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || "placeholder",
-)
+function getCircleFeedShareClient() {
+  if (!process.env.SUPABASE_SERVICE_ROLE_KEY) return null
+  return createServerClient()
+}
 
 /**
  * The explicit community → Loop feed control.
@@ -20,7 +20,7 @@ const supabase = createClient(
  * only way one becomes a public Loop, and only the author (or community staff)
  * can make that call. Private communities can never be shared.
  */
-async function loadContext(circleId: string, postId: string, userId: string) {
+async function loadContext(supabase: ReturnType<typeof createServerClient>, circleId: string, postId: string, userId: string) {
   const [{ data: post }, { data: circle }, { data: member }] = await Promise.all([
     supabase
       .from("circle_posts")
@@ -31,9 +31,10 @@ async function loadContext(circleId: string, postId: string, userId: string) {
     supabase.from("circles").select("id, name, handle, is_private").eq("id", circleId).maybeSingle(),
     supabase
       .from("circle_members")
-      .select("role")
+      .select("role, status")
       .eq("circle_id", circleId)
       .eq("user_id", userId)
+      .in("status", ["active", "approved"])
       .maybeSingle(),
   ])
   return { post, circle, member }
@@ -44,11 +45,14 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     const { id: circleId, postId } = await params
     const user = await getUserFromRequest(request)
     if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
+    const supabase = getCircleFeedShareClient()
+    if (!supabase) return NextResponse.json({ error: "Circle sharing is unavailable" }, { status: 503 })
 
-    const { post, circle, member } = await loadContext(circleId, postId, user.id)
+    const { post, circle, member } = await loadContext(supabase, circleId, postId, user.id)
     if (!post) return NextResponse.json({ error: "Post not found" }, { status: 404 })
 
-    const isStaff = ["owner", "admin", "moderator"].includes(member?.role || "")
+    if (!member) return NextResponse.json({ error: "Join this Circle to share its posts" }, { status: 403 })
+    const isStaff = ["owner", "admin", "moderator"].includes(member.role || "")
     if (post.author_id !== user.id && !isStaff) {
       return NextResponse.json({ error: "Only the author can share this discussion" }, { status: 403 })
     }
@@ -100,11 +104,14 @@ export async function DELETE(request: NextRequest, { params }: { params: Promise
     const { id: circleId, postId } = await params
     const user = await getUserFromRequest(request)
     if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
+    const supabase = getCircleFeedShareClient()
+    if (!supabase) return NextResponse.json({ error: "Circle sharing is unavailable" }, { status: 503 })
 
-    const { post, member } = await loadContext(circleId, postId, user.id)
+    const { post, member } = await loadContext(supabase, circleId, postId, user.id)
     if (!post) return NextResponse.json({ error: "Post not found" }, { status: 404 })
 
-    const isStaff = ["owner", "admin", "moderator"].includes(member?.role || "")
+    if (!member) return NextResponse.json({ error: "Join this Circle to manage shared posts" }, { status: 403 })
+    const isStaff = ["owner", "admin", "moderator"].includes(member.role || "")
     if (post.author_id !== user.id && !isStaff) {
       return NextResponse.json({ error: "Only the author can stop sharing this discussion" }, { status: 403 })
     }

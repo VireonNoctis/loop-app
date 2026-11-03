@@ -125,7 +125,18 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
       .maybeSingle()
     if (!membership) return NextResponse.json({ error: "Not a member" }, { status: 403 })
 
-    const body = await request.json()
+    const { data: conversation, error: conversationError } = await supabase
+      .from("conversations")
+      .select("is_group")
+      .eq("id", id)
+      .maybeSingle()
+    if (conversationError) {
+      return NextResponse.json({ error: "Could not verify group conversation" }, { status: 500 })
+    }
+    if (!conversation) return NextResponse.json({ error: "Conversation not found" }, { status: 404 })
+    if (!conversation.is_group) return NextResponse.json({ error: "Not a group" }, { status: 400 })
+
+    const body = await request.json().catch(() => ({}))
     const { user_id: targetUserId, role: newRole, permissions } = body
     if (!targetUserId || !newRole) return NextResponse.json({ error: "user_id and role required" }, { status: 400 })
 
@@ -209,9 +220,6 @@ export async function DELETE(request: NextRequest, { params }: { params: Promise
     const { id } = await params
     const supabase = createServerClient()
 
-    const body = await request.json().catch(() => ({}))
-    const targetUserId = body.user_id || user.id
-
     const { data: membership } = await supabase
       .from("conversation_participants")
       .select("role")
@@ -220,6 +228,20 @@ export async function DELETE(request: NextRequest, { params }: { params: Promise
       .is("left_at", null)
       .maybeSingle()
     if (!membership) return NextResponse.json({ error: "Not a member" }, { status: 403 })
+
+    const { data: conversation, error: conversationError } = await supabase
+      .from("conversations")
+      .select("is_group")
+      .eq("id", id)
+      .maybeSingle()
+    if (conversationError) {
+      return NextResponse.json({ error: "Could not verify group conversation" }, { status: 500 })
+    }
+    if (!conversation) return NextResponse.json({ error: "Conversation not found" }, { status: 404 })
+    if (!conversation.is_group) return NextResponse.json({ error: "Not a group" }, { status: 400 })
+
+    const body = await request.json().catch(() => ({}))
+    const targetUserId = typeof body.user_id === "string" ? body.user_id : user.id
 
     // Self-leave
     if (targetUserId === user.id) {

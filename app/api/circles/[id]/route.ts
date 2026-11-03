@@ -1,13 +1,24 @@
 import { type NextRequest, NextResponse } from "next/server";
-import { createClient } from "@/lib/supabase";
+import { createServerClient } from "@/lib/supabase";
 import { hardDeleteCircle, setCircleActive } from "@/lib/circle-lifecycle";
 import { getUserFromRequest } from "@/lib/server-auth";
 import { isProUser } from "@/lib/pro-features";
+import { canEditCircleStudio } from "@/lib/circle-permissions";
 
-const supabase = createClient(process.env.NEXT_PUBLIC_SUPABASE_URL || "https://placeholder.supabase.co", process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || "placeholder")
+function getCircleRouteClient() {
+  if (!process.env.SUPABASE_SERVICE_ROLE_KEY) return null
+  return createServerClient()
+}
+
+function unavailableCircleResponse() {
+  return NextResponse.json({ error: "Circle service is unavailable" }, { status: 503 })
+}
 
 export async function GET(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   try {
+    const supabase = getCircleRouteClient()
+    if (!supabase) return unavailableCircleResponse()
+
     const currentUser = await getUserFromRequest(request)
 
     const { id: circleId } = await params
@@ -74,7 +85,7 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
       }
 
       // Circle owner always has dashboard access even if membership row is missing/stale.
-      if (circle.owner_id === currentUser.id || circle.creator_id === currentUser.id) {
+      if (circle.owner_id === currentUser.id) {
         isMember = true
         userRole = "owner"
         membershipStatus = "active"
@@ -250,19 +261,35 @@ export async function PUT(request: NextRequest, { params }: { params: Promise<{ 
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
     }
 
+    const supabase = getCircleRouteClient()
+    if (!supabase) return unavailableCircleResponse()
+
     const { id: circleId } = await params
 
-    // Check if user has permission to edit (owner or admin)
-    const { data: member } = await supabase
-      .from("circle_members")
-      .select("role")
-      .eq("circle_id", circleId)
-      .eq("user_id", user.id)
-      .in("role", ["owner", "admin"])
-      .single()
+    // Only the canonical owner or a currently active Circle admin may edit settings.
+    const { data: circle, error: circleError } = await supabase
+      .from("circles")
+      .select("owner_id")
+      .eq("id", circleId)
+      .maybeSingle()
 
-    if (!member) {
-      return NextResponse.json({ error: "Insufficient permissions" }, { status: 403 })
+    if (circleError) return NextResponse.json({ error: "Could not verify Circle permissions" }, { status: 503 })
+    if (!circle) return NextResponse.json({ error: "Circle not found" }, { status: 404 })
+
+    if (circle.owner_id !== user.id) {
+      const { data: member, error: memberError } = await supabase
+        .from("circle_members")
+        .select("role, status")
+        .eq("circle_id", circleId)
+        .eq("user_id", user.id)
+        .eq("role", "admin")
+        .in("status", ["active", "approved"])
+        .maybeSingle()
+
+      if (memberError) return NextResponse.json({ error: "Could not verify Circle membership" }, { status: 503 })
+      if (!member || !canEditCircleStudio(member.role, member.status)) {
+        return NextResponse.json({ error: "Insufficient permissions" }, { status: 403 })
+      }
     }
 
     const body = await request.json()
@@ -403,33 +430,45 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
     const user = await getUserFromRequest(request)
     if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
 
+    const supabase = getCircleRouteClient()
+    if (!supabase) return unavailableCircleResponse()
+
     const { id: circleId } = await params
     const body = await request.json().catch(() => ({}))
     const action = String(body.action || "")
 
-    const { data: circle } = await supabase
+    const { data: circle, error: circleError } = await supabase
       .from("circles")
-      .select("id, owner_id, creator_id, is_active")
+      .select("id, owner_id, is_active")
       .eq("id", circleId)
       .maybeSingle()
 
+    if (circleError) return NextResponse.json({ error: "Could not verify Circle permissions" }, { status: 503 })
     if (!circle) return NextResponse.json({ error: "Circle not found" }, { status: 404 })
 
-    const [{ data: member }, { data: adminProfile }] = await Promise.all([
+    const [{ data: member, error: memberError }, { data: adminProfile, error: adminProfileError }] = await Promise.all([
       supabase
         .from("circle_members")
-        .select("role")
+        .select("role, status")
         .eq("circle_id", circleId)
         .eq("user_id", user.id)
-        .in("role", ["owner", "admin"])
+        .eq("role", "admin")
+        .in("status", ["active", "approved"])
         .maybeSingle(),
       supabase.from("profiles").select("is_admin").eq("id", user.id).maybeSingle(),
     ])
 
-    const isOwner = circle.owner_id === user.id || circle.creator_id === user.id
-    const canManage = isOwner || Boolean(member) || Boolean(adminProfile?.is_admin)
+    if (memberError || adminProfileError) {
+      return NextResponse.json({ error: "Could not verify Circle permissions" }, { status: 503 })
+    }
+
+    // creator_id is historical attribution, not a permanent ownership grant.
+    const isOwner = circle.owner_id === user.id
+    const canManage = isOwner
+      || Boolean(member && canEditCircleStudio(member.role, member.status))
+      || Boolean(adminProfile?.is_admin)
     if (!canManage) {
-      return NextResponse.json({ error: "Only community admins can manage this circle" }, { status: 403 })
+      return NextResponse.json({ error: "Only active Circle admins can manage this Circle" }, { status: 403 })
     }
 
     if (action === "deactivate" || action === "activate") {
@@ -466,33 +505,34 @@ export async function DELETE(request: NextRequest, { params }: { params: Promise
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
     }
 
+    const supabase = getCircleRouteClient()
+    if (!supabase) return unavailableCircleResponse()
+
     const { id: circleId } = await params
 
-    const { data: circle } = await supabase
+    const { data: circle, error: circleError } = await supabase
       .from("circles")
-      .select("owner_id, creator_id")
+      .select("owner_id")
       .eq("id", circleId)
       .maybeSingle()
 
+    if (circleError) return NextResponse.json({ error: "Could not verify Circle ownership" }, { status: 503 })
     if (!circle) {
       return NextResponse.json({ error: "Circle not found" }, { status: 404 })
     }
 
-    const [{ data: member }, { data: adminProfile }] = await Promise.all([
-      supabase
-        .from("circle_members")
-        .select("role")
-        .eq("circle_id", circleId)
-        .eq("user_id", user.id)
-        .in("role", ["owner", "admin"])
-        .maybeSingle(),
-      supabase.from("profiles").select("is_admin").eq("id", user.id).maybeSingle(),
-    ])
+    const isOwner = circle.owner_id === user.id
+    if (!isOwner) {
+      const { data: adminProfile, error: adminProfileError } = await supabase
+        .from("profiles")
+        .select("is_admin")
+        .eq("id", user.id)
+        .maybeSingle()
 
-    const isOwner = circle.owner_id === user.id || circle.creator_id === user.id
-    const canDelete = isOwner || member?.role === "admin" || Boolean(adminProfile?.is_admin)
-    if (!canDelete) {
-      return NextResponse.json({ error: "Only community admins can delete this circle" }, { status: 403 })
+      if (adminProfileError) return NextResponse.json({ error: "Could not verify administrator access" }, { status: 503 })
+      if (!adminProfile?.is_admin) {
+        return NextResponse.json({ error: "Only the Circle owner can delete this Circle" }, { status: 403 })
+      }
     }
 
     const { error: deleteError } = await hardDeleteCircle(supabase, circleId)

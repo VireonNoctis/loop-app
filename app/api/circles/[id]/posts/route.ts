@@ -1,15 +1,21 @@
 import { type NextRequest, NextResponse } from "next/server";
-import { createClient } from "@/lib/supabase";
+import { createServerClient } from "@/lib/supabase";
 import { checkCirclePrivateAccess } from "@/lib/circle-access";
 import { getUserFromRequest } from "@/lib/server-auth";
 import { getMediaLimit } from "@/lib/circle-limits";
 import { canShareCircle, isShareablePost, sharePostToLoopFeed } from "@/lib/community-feed-share";
 
-const supabase = createClient(process.env.NEXT_PUBLIC_SUPABASE_URL || "https://placeholder.supabase.co", process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || "placeholder")
+function getCirclePostsClient() {
+  if (!process.env.SUPABASE_SERVICE_ROLE_KEY) return null
+  return createServerClient()
+}
 
 // Get circle posts
 export async function GET(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   try {
+    const supabase = getCirclePostsClient()
+    if (!supabase) return NextResponse.json({ error: "Circle post service is unavailable" }, { status: 503 })
+
     const { searchParams } = new URL(request.url)
     const limit = Number.parseInt(searchParams.get("limit") || "20")
     const offset = Number.parseInt(searchParams.get("offset") || "0")
@@ -153,6 +159,9 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     if (!user) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
     }
+
+    const supabase = getCirclePostsClient()
+    if (!supabase) return NextResponse.json({ error: "Circle post service is unavailable" }, { status: 503 })
 
     const { id: circleId } = await params
     const body = await request.json()
@@ -551,6 +560,9 @@ export async function PUT(request: NextRequest, { params }: { params: Promise<{ 
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
     }
 
+    const supabase = getCirclePostsClient()
+    if (!supabase) return NextResponse.json({ error: "Circle post service is unavailable" }, { status: 503 })
+
     const { id: circleId } = await params
     const body = await request.json()
     const { postId, content, media_url, media_type, hashtags, is_pinned } = body
@@ -673,6 +685,9 @@ export async function DELETE(request: NextRequest, { params }: { params: Promise
     if (!user) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
     }
+
+    const supabase = getCirclePostsClient()
+    if (!supabase) return NextResponse.json({ error: "Circle post service is unavailable" }, { status: 503 })
 
     const { id: circleId } = await params
     const { searchParams } = new URL(request.url)

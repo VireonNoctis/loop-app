@@ -1,5 +1,6 @@
 import { type NextRequest, NextResponse } from "next/server"
 import { createServerClient } from "@/lib/supabase"
+import { can } from "@/lib/community-permissions"
 import { getUserFromRequest } from "@/lib/server-auth"
 import { GoogleGenAI } from "@google/genai"
 
@@ -10,10 +11,42 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
 
     const { id: circleId } = await params
     const body = await request.json().catch(() => ({}))
-    const triggerType = body.trigger_type || "chat" // "welcome" | "chat" | "moderation"
-    const userMessage = body.message || ""
-
+    if (!process.env.SUPABASE_SERVICE_ROLE_KEY) {
+      return NextResponse.json({ error: "Circle bots are unavailable" }, { status: 503 })
+    }
+    const triggerType = String(body.trigger_type || "chat")
+    if (!["welcome", "chat", "moderation"].includes(triggerType)) {
+      return NextResponse.json({ error: "Unsupported bot trigger" }, { status: 400 })
+    }
+    const userMessage = String(body.message || "").trim().slice(0, 1500)
     const supabase = createServerClient()
+
+    const { data: membership, error: membershipError } = await supabase
+      .from("circle_members")
+      .select("role, status, permissions, is_muted, muted_until")
+      .eq("circle_id", circleId)
+      .eq("user_id", user.id)
+      .maybeSingle()
+
+    if (membershipError) return NextResponse.json({ error: "Could not verify Circle membership" }, { status: 503 })
+    if (!membership || !["active", "approved"].includes(String(membership.status || ""))) {
+      return NextResponse.json({ error: "Join this Circle before using its bots" }, { status: 403 })
+    }
+    if (membership.is_muted && (!membership.muted_until || new Date(membership.muted_until).getTime() > Date.now())) {
+      return NextResponse.json({ error: "Muted members cannot trigger Circle bots" }, { status: 403 })
+    }
+
+    const isStaff = ["owner", "admin", "moderator"].includes(String(membership.role || ""))
+    if (triggerType === "moderation" && !isStaff) {
+      return NextResponse.json({ error: "Only Circle staff can run moderation bot actions" }, { status: 403 })
+    }
+    if (
+      body.save_as_post &&
+      !isStaff &&
+      !(Array.isArray(membership.permissions) && can(membership.permissions, "post.create"))
+    ) {
+      return NextResponse.json({ error: "You do not have permission to create Circle posts" }, { status: 403 })
+    }
 
     // Get active circle bots
     const { data: botConfig } = await supabase

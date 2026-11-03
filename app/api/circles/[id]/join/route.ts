@@ -1,76 +1,74 @@
 import { type NextRequest, NextResponse } from "next/server";
-import { createClient } from "@/lib/supabase";
+import { createServerClient } from "@/lib/supabase";
 import { notifyUsers } from "@/lib/notifications";
 import { getUserFromRequest } from "@/lib/server-auth";
 
-const supabase = createClient(process.env.NEXT_PUBLIC_SUPABASE_URL || "https://placeholder.supabase.co", process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || "placeholder")
+const supabase = createServerClient()
 
 
 export async function POST(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   try {
-
-    const user = await getUserFromRequest(request)
-
-    if (!user) {
-      return NextResponse.json({ error: "Invalid token" }, { status: 401 })
+    if (!process.env.SUPABASE_SERVICE_ROLE_KEY) {
+      return NextResponse.json({ error: "Circle membership service is unavailable" }, { status: 503 })
     }
+    const user = await getUserFromRequest(request)
+    if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
 
     const { id: circleId } = await params
-
-    // Check if circle exists
     const { data: circle, error: circleError } = await supabase
       .from("circles")
       .select("id, name, is_private, owner_id, creator_id")
       .eq("id", circleId)
       .maybeSingle()
 
-    if (circleError || !circle) {
-      return NextResponse.json({ error: "Circle not found" }, { status: 404 })
+    if (circleError) {
+      console.error("Could not load Circle before join:", circleError)
+      return NextResponse.json({ error: "Could not load Circle" }, { status: 500 })
     }
+    if (!circle) return NextResponse.json({ error: "Circle not found" }, { status: 404 })
 
-    // Check if user is already a member (or was previously removed/banned)
-    const { data: existingMember } = await supabase
-      .from("circle_members")
-      .select("id, status")
-      .eq("circle_id", circleId)
-      .eq("user_id", user.id)
-      .maybeSingle()
+    // One row-locked database operation enforces account status, existing
+    // membership, private approval and max_members consistently under load.
+    const { data, error: joinError } = await supabase.rpc("join_circle", {
+      p_circle_id: circleId,
+      p_user_id: user.id,
+    })
 
-    if (existingMember) {
-      if (existingMember.status === "active") {
-        return NextResponse.json({ error: "Already a member" }, { status: 400 })
-      } else if (existingMember.status === "pending") {
-        return NextResponse.json({ error: "Join request already pending" }, { status: 400 })
-      } else if (existingMember.status === "banned") {
-        return NextResponse.json({ error: "You cannot rejoin this circle" }, { status: 403 })
+    if (joinError) {
+      console.error("Atomic Circle join failed:", joinError)
+      if (joinError.code === "P0002") return NextResponse.json({ error: "Circle or account not found" }, { status: 404 })
+      if (joinError.code === "42501") {
+        return NextResponse.json({ error: joinError.message || "This account cannot join the Circle" }, { status: 403 })
       }
+      if (joinError.code === "22023") {
+        return NextResponse.json({ error: joinError.message || "This Circle is full" }, { status: 409 })
+      }
+      if (["42883", "42P01", "42703"].includes(joinError.code || "")) {
+        return NextResponse.json({ error: "Circle membership is unavailable until the database migration is applied." }, { status: 503 })
+      }
+      return NextResponse.json({ error: "Failed to update Circle membership" }, { status: 500 })
     }
 
-    // For private circles, create a pending request
-    const status = circle.is_private ? "pending" : "active"
+    const result = (Array.isArray(data) ? data[0] : data) as {
+      status?: string
+      already_member?: boolean
+      is_private?: boolean
+    } | null
 
-    // Re-joining (e.g. after leaving) reuses the existing row instead of a
-    // fresh insert, which previously hit the unique constraint and 500'd.
-    const { error: upsertError } = existingMember
-      ? await supabase
-          .from("circle_members")
-          .update({ role: "member", status, joined_at: new Date().toISOString() })
-          .eq("id", existingMember.id)
-      : await supabase.from("circle_members").insert({
-          circle_id: circleId,
-          user_id: user.id,
-          role: "member",
-          status,
-          joined_at: new Date().toISOString(),
-        })
-
-    if (upsertError) {
-      console.error("Database insert error:", upsertError)
-      return NextResponse.json({ error: "Failed to join circle" }, { status: 500 })
+    if (!result || !["active", "pending"].includes(result.status || "")) {
+      console.error("join_circle returned an unexpected result")
+      return NextResponse.json({ error: "Circle membership returned an invalid result" }, { status: 500 })
     }
 
-    if (circle.is_private) {
-      // Notify owner + admins/moderators so pending requests don't sit unseen.
+    if (result.already_member) {
+      return NextResponse.json({
+        success: true,
+        status: result.status,
+        message: result.status === "pending" ? "Join request is already pending" : "Already a member",
+      })
+    }
+
+    if (result.status === "pending") {
       const { data: requesterProfile } = await supabase
         .from("profiles")
         .select("username, display_name")
@@ -85,11 +83,11 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
         .eq("status", "active")
         .in("role", ["owner", "admin", "moderator"])
 
-      const recipientIds = new Set<string>([circle.owner_id, circle.creator_id].filter(Boolean) as string[])
-      for (const mod of moderators || []) recipientIds.add(mod.user_id)
-      recipientIds.delete(user.id)
+      const recipients = new Set<string>([circle.owner_id, circle.creator_id].filter(Boolean) as string[])
+      for (const moderator of moderators || []) recipients.add(moderator.user_id)
+      recipients.delete(user.id)
 
-      await notifyUsers(supabase, Array.from(recipientIds), {
+      await notifyUsers(supabase, Array.from(recipients), {
         type: "circle_join_request",
         title: "New join request",
         message: `${requesterName} wants to join ${circle.name}`,
@@ -98,106 +96,116 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
         pushCategory: "circleInvites",
         data: { circleId },
       })
+      return NextResponse.json({
+        success: true,
+        message: "Join request sent to moderators",
+        status: "pending",
+      }, { status: 202 })
     }
 
-    // Welcome bot — greets new members the moment they join (public circles).
-    if (status === "active") {
-      // The default-Power grant runs on INSERT (trg_grant_default_powers), but
-      // rejoining reuses the row with an UPDATE — so anyone who left and came
-      // back would silently hold no Powers. Grant it explicitly, idempotently.
-      try {
-        const { data: defRole } = await supabase
-          .from("community_roles")
-          .select("id")
-          .eq("circle_id", circleId)
-          .eq("is_default", true)
-          .maybeSingle()
-        if (defRole?.id) {
-          await supabase
-            .from("community_member_roles")
-            .upsert(
-              { circle_id: circleId, user_id: user.id, role_id: defRole.id },
-              { onConflict: "user_id,role_id" },
-            )
-        }
-      } catch (err) {
-        console.error("default power grant:", err)
+    // Post-commit effects are idempotent/best-effort; membership is already
+    // committed and the canonical member count was updated by the DB function.
+    try {
+      const { data: defaultRole } = await supabase
+        .from("community_roles")
+        .select("id")
+        .eq("circle_id", circleId)
+        .eq("is_default", true)
+        .maybeSingle()
+      if (defaultRole?.id) {
+        await supabase
+          .from("community_member_roles")
+          .upsert(
+            { circle_id: circleId, user_id: user.id, role_id: defaultRole.id },
+            { onConflict: "user_id,role_id" },
+          )
       }
-      try {
-        const { runWelcomeBot } = await import("@/lib/circle-bots")
-        await runWelcomeBot(supabase, circleId, user.id)
-      } catch (err) {
-        console.error("welcome bot:", err)
-      }
+    } catch (error) {
+      console.error("Default Circle power grant failed:", error)
+    }
 
-      // Community tags on the profile are user-curated (Settings → Communities)
-      // and are no longer auto-added on join — joining must not modify the
-      // member's profile.
+    try {
+      const { runWelcomeBot } = await import("@/lib/circle-bots")
+      await runWelcomeBot(supabase, circleId, user.id)
+    } catch (error) {
+      console.error("Circle welcome bot failed:", error)
+    }
 
-      // Quest progress: join_circle native action
-      try {
-        const { trackQuestAction } = await import("@/lib/quest-tracker")
-        await trackQuestAction(supabase, user.id, "join_circle")
-      } catch (err) {
-        console.error("quest track (join_circle):", err)
-      }
-
-      // Keep the discovery/share count in step with the real membership.
-      try {
-        const { syncCircleMemberCount } = await import("@/lib/circle-lifecycle")
-        await syncCircleMemberCount(supabase, circleId)
-      } catch (err) {
-        console.error("member count sync:", err)
-      }
+    try {
+      const { trackQuestAction } = await import("@/lib/quest-tracker")
+      await trackQuestAction(supabase, user.id, "join_circle")
+    } catch (error) {
+      console.error("Circle join quest tracking failed:", error)
     }
 
     return NextResponse.json({
       success: true,
-      message: circle.is_private ? "Join request sent to moderators" : "Successfully joined circle",
-      status,
+      message: "Successfully joined Circle",
+      status: "active",
     })
   } catch (error) {
-    console.error("Error joining circle:", error)
+    console.error("Error joining Circle:", error)
     return NextResponse.json({ error: "Internal server error" }, { status: 500 })
   }
 }
 
 export async function DELETE(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   try {
-
-    const user = await getUserFromRequest(request)
-
-    if (!user) {
-      return NextResponse.json({ error: "Invalid token" }, { status: 401 })
+    if (!process.env.SUPABASE_SERVICE_ROLE_KEY) {
+      return NextResponse.json({ error: "Circle membership service is unavailable" }, { status: 503 })
     }
+    const user = await getUserFromRequest(request)
+    if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
 
     const { id: circleId } = await params
+    const { data, error } = await supabase.rpc("manage_circle_member", {
+      p_circle_id: circleId,
+      p_actor_id: user.id,
+      p_target_user_id: user.id,
+      p_action: "leave",
+    })
 
-    // Remove user from circle
-    const { error: deleteError } = await supabase
-      .from("circle_members")
-      .delete()
-      .eq("circle_id", circleId)
-      .eq("user_id", user.id)
+    if (error) {
+      console.error("Atomic Circle leave failed:", error)
+      if (error.code === "42501") return NextResponse.json({ error: error.message || "This account cannot leave the Circle" }, { status: 403 })
+      if (error.code === "P0002") return NextResponse.json({ error: "Circle membership not found" }, { status: 404 })
+      if (error.code === "55000") return NextResponse.json({ error: error.message || "This membership can no longer be withdrawn" }, { status: 409 })
+      if (error.code === "22023") return NextResponse.json({ error: error.message || "Transfer ownership before leaving" }, { status: 409 })
+      if (["42883", "42P01", "42703"].includes(error.code || "")) {
+        return NextResponse.json({ error: "Atomic Circle leave is unavailable until the database migration is applied." }, { status: 503 })
+      }
+      return NextResponse.json({ error: "Could not update Circle membership" }, { status: 500 })
+    }
 
-    if (deleteError) {
-      console.error("Database delete error:", deleteError)
-      return NextResponse.json({ error: "Failed to leave circle" }, { status: 500 })
+    const result = (Array.isArray(data) ? data[0] : data) as {
+      circle_id?: string
+      user_id?: string
+      status?: string
+      member_count?: number
+    } | null
+    if (result?.circle_id !== circleId || result.user_id !== user.id || !["left", "cancelled"].includes(result.status || "")) {
+      return NextResponse.json({ error: "Circle leave returned an invalid result" }, { status: 500 })
     }
 
     try {
-      const { syncCircleMemberCount } = await import("@/lib/circle-lifecycle")
-      await syncCircleMemberCount(supabase, circleId)
-    } catch (err) {
-      console.error("member count sync:", err)
+      await supabase.channel(`circle-admin:${circleId}`).send({
+        type: "broadcast",
+        event: "admin_refresh",
+        payload: { action: "leave", userId: user.id },
+      })
+    } catch {
+      /* realtime refresh is best-effort; the database result is canonical */
     }
 
+    const wasMember = result.status === "left"
     return NextResponse.json({
       success: true,
-      message: "Successfully left circle",
+      status: result.status,
+      member_count: result.member_count,
+      message: wasMember ? "Successfully left Circle" : "Join request cancelled",
     })
   } catch (error) {
-    console.error("Error leaving circle:", error)
+    console.error("Error updating Circle membership:", error)
     return NextResponse.json({ error: "Internal server error" }, { status: 500 })
   }
 }

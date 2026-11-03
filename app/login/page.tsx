@@ -81,7 +81,8 @@ function LoginContent() {
 
     try {
       await login(email, password)
-      router.replace(redirect && redirect.startsWith("/") ? redirect : "/")
+      const destination = redirect && redirect.startsWith("/") && !redirect.startsWith("//") ? redirect : "/"
+      router.replace(`/legal/consent?returnTo=${encodeURIComponent(destination)}`)
     } catch (err: any) {
       setError(err.message || "Failed to sign in")
     } finally {
@@ -94,7 +95,7 @@ function LoginContent() {
     setLoading(true)
     try {
       await loginWithGoogle(
-        redirect && redirect.startsWith("/") ? `${window.location.origin}${redirect}` : undefined,
+        `${window.location.origin}/legal/consent?returnTo=${encodeURIComponent(redirect && redirect.startsWith("/") && !redirect.startsWith("//") ? redirect : "/")}`,
       )
     } catch (err: any) {
       setError(
@@ -192,6 +193,9 @@ function LoginContent() {
               </div>
             </div>
 
+            <p className="text-xs leading-relaxed text-muted-foreground">
+              After signing in, you’ll confirm the current Terms of Service and Privacy Policy before continuing.
+            </p>
             <Button
               type="submit"
               className="w-full h-11 rounded-xl bg-gradient-to-r from-cyan-600 to-indigo-600 dark:from-cyan-500 dark:to-indigo-600 text-white font-semibold shadow-lg shadow-cyan-500/25 hover:from-cyan-500 hover:to-indigo-500 transition-all duration-200 group"

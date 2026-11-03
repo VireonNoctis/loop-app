@@ -100,6 +100,21 @@ declare `display: flex | none`, and `background` cannot mix a colour with a
 gradient. `__tests__/og-engine.test.ts` walks every template tree and fails if a
 card breaks either rule, so these bugs cannot ship silently.
 
+## Rust backend transition
+
+LOOP is moving its server-side application layer to Rust. The Next.js/React application remains the presentation layer; new domain APIs, authentication, persistence, media authorization and background processing belong in the Rust service under backend/.
+
+The Rust API foundation currently provides PostgreSQL readiness, an optional private S3 adapter, a local PostgreSQL + MinIO Compose stack, and a dedicated CI workflow. Existing Next.js API routes and Supabase integrations are still present during the staged migration; this foundation does not claim that the migration is complete.
+
+Local Rust API development:
+
+1. Install stable Rust and Docker Compose.
+2. Change into backend/ and copy .env.example to .env.
+3. Run docker compose up --build.
+4. Check http://localhost:8080/health/live and http://localhost:8080/health/ready.
+
+See docs/PRODUCT_EXPERIENCE_ARCHITECTURE.md, docs/DESIGN_SYSTEM_REVAMP.md and docs/RUST_PLATFORM_MIGRATION.md before adding new product surfaces or backend routes.
+
 ## Documentation
 
 Detailed guides are in [`docs/`](./docs/):
@@ -108,3 +123,8 @@ Detailed guides are in [`docs/`](./docs/):
 - [Deployment Guide](docs/FINAL_DEPLOYMENT_GUIDE.md)
 - [UUID → Snowflake Migration Plan](docs/MIGRATION_PLAN_UUID_TO_SNOWFLAKE.md)
 - [Setup & Testing](docs/SETUP_AND_TESTING_GUIDE.md)
+
+
+## Legal publication readiness
+
+Before enabling account agreement in production, the service operator must complete the verified legal identity, contacts, active production providers, data locations, transfer safeguards, and retention schedule in both the Next.js and Rust API environments. See [Legal Publication Readiness](docs/LEGAL_PUBLICATION.md). The Rust API refuses to record document acceptance while required publication details are missing.

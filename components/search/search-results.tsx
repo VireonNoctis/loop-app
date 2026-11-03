@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react"
 import Link from "next/link"
-import { Hash, Users, GitBranch, Search, Circle } from "lucide-react"
+import { Hash, Users, GitBranch, Search, Circle, Bookmark, Sparkles } from "lucide-react"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Badge } from "@/components/ui/badge"
 import { UserBadges } from "@/components/user-badge"
@@ -30,13 +30,15 @@ export function SearchResults({ query }: SearchResultsProps) {
     users: any[]
     hashtags: any[]
     circles: any[]
-  }>({ loops: [], users: [], hashtags: [], circles: [] })
+    chains: any[]
+    collections: any[]
+  }>({ loops: [], users: [], hashtags: [], circles: [], chains: [], collections: [] })
   const [loading, setLoading] = useState(true)
 
   useEffect(() => {
     const performSearch = async () => {
       if (!query.trim()) {
-        setSearchResults({ loops: [], users: [], hashtags: [], circles: [] })
+        setSearchResults({ loops: [], users: [], hashtags: [], circles: [], chains: [], collections: [] })
         setLoading(false)
         return
       }
@@ -55,7 +57,9 @@ export function SearchResults({ query }: SearchResultsProps) {
           const loops = normalizeLoops(data.loops || nested.loops || [])
           const hashtags = data.hashtags || nested.hashtags || []
           const circles = data.circles || nested.circles || []
-          setSearchResults({ loops, users, hashtags, circles })
+          const chains = data.chains || nested.chains || []
+          const collections = data.collections || nested.collections || []
+          setSearchResults({ loops, users, hashtags, circles, chains, collections })
           if (user) {
             setFollowedUsers(new Set(users.filter((p: any) => p.is_following).map((p: any) => p.id)))
           }
@@ -69,6 +73,8 @@ export function SearchResults({ query }: SearchResultsProps) {
             users: usersData.users || usersData.data || [],
             hashtags: [],
             circles: [],
+            chains: [],
+            collections: [],
           })
         }
       } catch (error) {
@@ -141,7 +147,9 @@ export function SearchResults({ query }: SearchResultsProps) {
     !searchResults.loops.length &&
     !searchResults.users.length &&
     !searchResults.hashtags.length &&
-    !searchResults.circles.length
+    !searchResults.circles.length &&
+    !searchResults.chains.length &&
+    !searchResults.collections.length
 
   if (empty) {
     return (
@@ -157,7 +165,7 @@ export function SearchResults({ query }: SearchResultsProps) {
 
   return (
     <Tabs defaultValue="all" className="w-full">
-      <TabsList className="grid h-auto w-full grid-cols-2 gap-1 sm:grid-cols-5">
+      <TabsList className="grid h-auto w-full grid-cols-2 gap-1 sm:grid-cols-4 xl:grid-cols-7">
         <TabsTrigger value="all">All</TabsTrigger>
         <TabsTrigger value="users" className="gap-1">
           <Users className="h-3.5 w-3.5" /> People ({searchResults.users.length})
@@ -170,6 +178,12 @@ export function SearchResults({ query }: SearchResultsProps) {
         </TabsTrigger>
         <TabsTrigger value="circles" className="gap-1">
           <Circle className="h-3.5 w-3.5" /> Circles ({searchResults.circles.length})
+        </TabsTrigger>
+        <TabsTrigger value="chains" className="gap-1">
+          <Sparkles className="h-3.5 w-3.5" /> Chains ({searchResults.chains.length})
+        </TabsTrigger>
+        <TabsTrigger value="collections" className="gap-1">
+          <Bookmark className="h-3.5 w-3.5" /> Collections ({searchResults.collections.length})
         </TabsTrigger>
       </TabsList>
 
@@ -208,6 +222,28 @@ export function SearchResults({ query }: SearchResultsProps) {
             <div className="grid gap-3 sm:grid-cols-3">
               {searchResults.hashtags.slice(0, 6).map((hashtag: any) => (
                 <HashtagCard key={hashtag.tag} hashtag={hashtag} formatNumber={formatNumber} />
+              ))}
+            </div>
+          </section>
+        )}
+
+        {searchResults.chains.length > 0 && (
+          <section>
+            <h3 className="mb-3 text-sm font-semibold uppercase tracking-wide text-muted-foreground">Chains</h3>
+            <div className="grid gap-3 sm:grid-cols-2">
+              {searchResults.chains.slice(0, 4).map((chain: any) => (
+                <ChainCard key={chain.id} chain={chain} formatNumber={formatNumber} />
+              ))}
+            </div>
+          </section>
+        )}
+
+        {searchResults.collections.length > 0 && (
+          <section>
+            <h3 className="mb-3 text-sm font-semibold uppercase tracking-wide text-muted-foreground">Collections</h3>
+            <div className="grid gap-3 sm:grid-cols-2">
+              {searchResults.collections.slice(0, 4).map((collection: any) => (
+                <CollectionCard key={collection.id} collection={collection} />
               ))}
             </div>
           </section>
@@ -259,7 +295,76 @@ export function SearchResults({ query }: SearchResultsProps) {
           ))}
         </div>
       </TabsContent>
+
+      <TabsContent value="chains" className="mt-6">
+        <div className="grid gap-3 sm:grid-cols-2">
+          {searchResults.chains.map((chain: any) => (
+            <ChainCard key={chain.id} chain={chain} formatNumber={formatNumber} />
+          ))}
+        </div>
+      </TabsContent>
+
+      <TabsContent value="collections" className="mt-6">
+        <div className="grid gap-3 sm:grid-cols-2">
+          {searchResults.collections.map((collection: any) => (
+            <CollectionCard key={collection.id} collection={collection} />
+          ))}
+        </div>
+      </TabsContent>
     </Tabs>
+  )
+}
+
+function ChainCard({ chain, formatNumber }: { chain: any; formatNumber: (n: number) => string }) {
+  const creator = chain.creator || {}
+  return (
+    <Link href={`/chains/${chain.id}`}>
+      <Card className="h-full transition hover:bg-muted/40">
+        <CardContent className="flex h-full gap-3 p-4">
+          <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-primary/10 text-primary">
+            <Sparkles className="h-5 w-5" />
+          </div>
+          <div className="min-w-0 flex-1">
+            <div className="flex flex-wrap items-center gap-2">
+              <p className="truncate font-semibold">{chain.title}</p>
+              <Badge variant="secondary">{String(chain.kind || "open").replace(/_/g, " ")}</Badge>
+            </div>
+            <p className="mt-1 line-clamp-2 text-sm text-muted-foreground">{chain.description || chain.prompt || "A collaborative Chain."}</p>
+            <p className="mt-2 text-xs text-muted-foreground">
+              {formatNumber(chain.contribution_count || 0)} contributions · {formatNumber(chain.participant_count || 0)} contributors
+            </p>
+            <p className="mt-1 text-xs text-muted-foreground">
+              By {creator.display_name || creator.username || "LOOP creator"}
+            </p>
+          </div>
+        </CardContent>
+      </Card>
+    </Link>
+  )
+}
+
+function CollectionCard({ collection }: { collection: any }) {
+  const owner = collection.owner || {}
+  return (
+    <Link href={`/collections/${collection.id}`}>
+      <Card className="h-full transition hover:bg-muted/40">
+        <CardContent className="flex h-full gap-3 p-4">
+          <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-primary/10 text-primary">
+            <Bookmark className="h-5 w-5" />
+          </div>
+          <div className="min-w-0 flex-1">
+            <div className="flex flex-wrap items-center gap-2">
+              <p className="truncate font-semibold">{collection.title}</p>
+              {collection.is_collaborative ? <Badge variant="secondary">Collaborative</Badge> : null}
+            </div>
+            <p className="mt-1 line-clamp-2 text-sm text-muted-foreground">{collection.description || "A collection of shared discoveries."}</p>
+            <p className="mt-2 text-xs text-muted-foreground">
+              By {owner.display_name || owner.username || "LOOP member"}
+            </p>
+          </div>
+        </CardContent>
+      </Card>
+    </Link>
   )
 }
 

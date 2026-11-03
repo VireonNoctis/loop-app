@@ -60,6 +60,10 @@ interface CreatorRevenueDashboardProps {
   className?: string
 }
 
+function formatNumber(value: number): string {
+  return new Intl.NumberFormat(undefined, { maximumFractionDigits: 0 }).format(value)
+}
+
 export function CreatorRevenueDashboard({ className }: CreatorRevenueDashboardProps) {
   const { user, getAuthHeader } = useAuth()
   const [data, setData] = useState<RevenueData | null>(null)
@@ -172,7 +176,7 @@ export function CreatorRevenueDashboard({ className }: CreatorRevenueDashboardPr
               <p className="text-sm font-bold">{formatCoins(data.balance.total_earnings)}</p>
             </div>
             <div className="text-center">
-              <p className="text-[10px] text-muted-foreground">This Period</p>
+              <p className="text-[10px] text-muted-foreground">Gift Coins This Period</p>
               <p className="text-sm font-bold">{formatCoins(totalRevenue)}</p>
             </div>
             <div className="text-center">
@@ -212,7 +216,7 @@ export function CreatorRevenueDashboard({ className }: CreatorRevenueDashboardPr
         </Card>
       )}
 
-      {/* Top Earning Content */}
+      {/* Top Content Performance */}
       {data.top_earning_content.length > 0 && (
         <Card className="border-border/50">
           <CardHeader className="pb-2 flex flex-row items-center justify-between">
@@ -234,7 +238,7 @@ export function CreatorRevenueDashboard({ className }: CreatorRevenueDashboardPr
                   </p>
                 </div>
                 <span className="shrink-0 text-sm font-bold text-emerald-500">
-                  {formatCoins(item.earnings)}
+                  {formatNumber(item.views)} views
                 </span>
               </div>
             ))}
@@ -242,12 +246,12 @@ export function CreatorRevenueDashboard({ className }: CreatorRevenueDashboardPr
         </Card>
       )}
 
-      {/* Next Payout */}
+      {/* Withdrawal status */}
       {data.next_payout_date && (
         <div className="flex items-center gap-2 rounded-xl border border-dashed border-border/50 bg-muted/20 p-3">
           <Clock className="h-4 w-4 text-muted-foreground" />
           <span className="text-xs text-muted-foreground">
-            Next payout: <span className="font-medium text-foreground">{new Date(data.next_payout_date).toLocaleDateString()}</span>
+            Payout timing is provided after a withdrawal request is reviewed.
           </span>
         </div>
       )}

@@ -1,6 +1,8 @@
 import "server-only"
 import webpush from "web-push"
 import { createServerClient } from "@/lib/supabase"
+import { getPushSuppressionReason, type PushCategory } from "@/lib/notification-preferences"
+export type { PushCategory } from "@/lib/notification-preferences"
 
 /** Fallback VAPID pair so push works if env vars are missing (override in production). */
 const FALLBACK_PUBLIC =
@@ -41,36 +43,7 @@ export type PushPayload = {
   data?: Record<string, unknown>
 }
 
-export type PushCategory =
-  | "liveStreams"
-  | "directMessages"
-  | "giftRewards"
-  | "circleInvites"
-  | "social"
-  | "system"
 
-function categoryAllowed(
-  settings: Record<string, any> | null | undefined,
-  category: PushCategory,
-): boolean {
-  if (!settings) return true
-  if (settings.push === false || settings.push_notifications === false) return false
-
-  switch (category) {
-    case "liveStreams":
-      return settings.liveStreams !== false && settings.live_streams !== false
-    case "directMessages":
-      return settings.directMessages !== false && settings.direct_messages !== false && settings.messages !== false
-    case "giftRewards":
-      return settings.giftRewards !== false && settings.gifts !== false
-    case "circleInvites":
-      return settings.circleInvites !== false && settings.circles !== false
-    case "social":
-      return settings.social !== false && settings.likes !== false
-    default:
-      return true
-  }
-}
 
 function normalizeSubscription(raw: any): webpush.PushSubscription | null {
   if (!raw) return null
@@ -110,9 +83,8 @@ export async function sendWebPushToUser(
       .maybeSingle()
 
     const settings = (profile as any)?.notification_settings
-    if (!categoryAllowed(settings, options?.category || "system")) {
-      return { delivered: 0, failed: 0, skipped: "prefs_disabled" }
-    }
+    const suppression = getPushSuppressionReason(settings, options?.category || "system")
+    if (suppression) return { delivered: 0, failed: 0, skipped: suppression }
   }
 
   const { data: rows, error } = await supabase

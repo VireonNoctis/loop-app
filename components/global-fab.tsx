@@ -29,6 +29,9 @@ const EXCLUDED_PREFIXES = [
   "/verification",
   "/reset-password",
   "/landing",
+  "/legal",
+  "/terms",
+  "/privacy",
 ]
 
 function isExcludedPath(pathname: string) {
@@ -80,7 +83,7 @@ export function GlobalFab() {
   return (
     <div
       className={cn(
-        "fixed bottom-20 right-4 z-50 sm:bottom-6 sm:right-6 transition-all duration-300 ease-out",
+        "fixed bottom-[calc(5rem+env(safe-area-inset-bottom))] right-4 z-50 sm:bottom-6 sm:right-6 transition-all duration-300 ease-out",
         hidden ? "translate-y-24 opacity-0 pointer-events-none" : "translate-y-0 opacity-100",
       )}
     >

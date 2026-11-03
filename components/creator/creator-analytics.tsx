@@ -9,30 +9,27 @@ import {
   Heart,
   MessageCircle,
   Users,
-  TrendingUp,
   Clock,
   Zap,
-  ArrowUpRight,
-  ArrowDownRight,
   BarChart3,
   Calendar,
   RefreshCw,
+  ArrowUpRight,
+  ArrowDownRight,
 } from "lucide-react"
 import { useAuth } from "@/hooks/use-auth"
 import { cn } from "@/lib/utils"
 
 interface AnalyticsData {
   totalViews: number
-  viewsChange: number
   totalLikes: number
-  likesChange: number
   totalComments: number
-  commentsChange: number
   totalFollowers: number
-  followersChange: number
   engagementRate: number
-  engagementChange: number
-  bestPostingTime: string
+  bestPostingTime: string | null
+  periodLabel: string
+  comparisonNote: string
+  previousPeriod: { postsPublished: number; lifetimeViewsOnPosts: number; lifetimeLikesOnPosts: number; lifetimeCommentsOnPosts: number } | null
   topPost: {
     content: string
     views: number
@@ -185,7 +182,7 @@ export function CreatorAnalytics() {
       <div className="flex items-center justify-between">
         <div>
           <h2 className="text-xl font-extrabold text-foreground">Creator Insights</h2>
-          <p className="text-sm text-muted-foreground">Track your content performance</p>
+          <p className="text-sm text-muted-foreground">{analytics.periodLabel} · performance of Loops published during this period</p>
         </div>
         <div className="flex items-center gap-2">
           <div className="flex rounded-xl border border-border bg-muted p-0.5">
@@ -220,28 +217,24 @@ export function CreatorAnalytics() {
         <MetricCard
           label="Total Views"
           value={formatNumber(analytics.totalViews)}
-          change={analytics.viewsChange}
           icon={Eye}
           color="bg-blue-500/10 text-blue-500"
         />
         <MetricCard
           label="Total Likes"
           value={formatNumber(analytics.totalLikes)}
-          change={analytics.likesChange}
           icon={Heart}
           color="bg-rose-500/10 text-rose-500"
         />
         <MetricCard
           label="Comments"
           value={formatNumber(analytics.totalComments)}
-          change={analytics.commentsChange}
           icon={MessageCircle}
           color="bg-emerald-500/10 text-emerald-500"
         />
         <MetricCard
           label="Followers"
           value={formatNumber(analytics.totalFollowers)}
-          change={analytics.followersChange}
           icon={Users}
           color="bg-violet-500/10 text-violet-500"
         />
@@ -257,22 +250,7 @@ export function CreatorAnalytics() {
                 {analytics.engagementRate.toFixed(1)}%
               </p>
             </div>
-            <div
-              className={cn(
-                "flex items-center gap-1 px-3 py-1.5 rounded-full text-sm font-bold",
-                analytics.engagementChange > 0
-                  ? "bg-emerald-500/10 text-emerald-500"
-                  : analytics.engagementChange < 0
-                  ? "bg-rose-500/10 text-rose-500"
-                  : "bg-muted text-muted-foreground"
-              )}
-            >
-              {analytics.engagementChange > 0 ? (
-                <TrendingUp className="h-4 w-4" />
-              ) : null}
-              {analytics.engagementChange > 0 ? "+" : ""}
-              {analytics.engagementChange.toFixed(1)}%
-            </div>
+            <span className="text-xs text-muted-foreground">Likes + comments / views</span>
           </div>
         </CardContent>
       </Card>
@@ -305,14 +283,14 @@ export function CreatorAnalytics() {
         </CardContent>
       </Card>
 
-      {/* Best Posting Time */}
+      {/* Observed posting hour */}
       {analytics.bestPostingTime && (
         <div className="flex items-center gap-3 rounded-2xl border border-border bg-card p-4">
           <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-amber-500/10 text-amber-500">
             <Clock className="h-5 w-5" />
           </div>
           <div>
-            <p className="text-xs text-muted-foreground">Best Time to Post</p>
+            <p className="text-xs text-muted-foreground">Most Active Posting Hour (UTC)</p>
             <p className="text-sm font-bold text-foreground">{analytics.bestPostingTime}</p>
           </div>
         </div>
@@ -350,7 +328,7 @@ export function CreatorAnalytics() {
       {analytics.recentGrowth.length > 0 && (
         <Card className="border-border">
           <CardHeader className="p-4 pb-2">
-            <CardTitle className="text-sm font-bold">Growth Summary</CardTitle>
+            <CardTitle className="text-sm font-bold">Publishing Summary</CardTitle>
           </CardHeader>
           <CardContent className="p-4 pt-0 space-y-2">
             {analytics.recentGrowth.map((stat, i) => (
@@ -360,15 +338,22 @@ export function CreatorAnalytics() {
                   <span className="text-sm font-bold text-foreground">
                     {formatNumber(stat.value)}
                   </span>
-                  {stat.trend === "up" && (
-                    <ArrowUpRight className="h-3.5 w-3.5 text-emerald-500" />
-                  )}
-                  {stat.trend === "down" && (
-                    <ArrowDownRight className="h-3.5 w-3.5 text-rose-500" />
-                  )}
+
                 </div>
               </div>
             ))}
+          </CardContent>
+        </Card>
+      )}
+      <p className="text-xs text-muted-foreground">{analytics.comparisonNote}</p>
+      {analytics.previousPeriod && (
+        <Card className="border-border">
+          <CardHeader className="p-4 pb-2">
+            <CardTitle className="text-sm font-bold">Previous period context</CardTitle>
+          </CardHeader>
+          <CardContent className="grid grid-cols-2 gap-3 p-4 pt-0 text-sm">
+            <div><p className="text-muted-foreground">Posts published</p><p className="font-semibold">{formatNumber(analytics.previousPeriod.postsPublished)}</p></div>
+            <div><p className="text-muted-foreground">Lifetime views on those posts</p><p className="font-semibold">{formatNumber(analytics.previousPeriod.lifetimeViewsOnPosts)}</p></div>
           </CardContent>
         </Card>
       )}

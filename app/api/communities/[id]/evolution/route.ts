@@ -9,15 +9,31 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
     const sb = communityClient()
 
-    const { data: membership } = await sb.from("circle_members").select("role").eq("circle_id", id).eq("user_id", user.id).maybeSingle()
-    if (!canAdmin(membership?.role)) {
+    const { data: membership, error: membershipError } = await sb
+      .from("circle_members")
+      .select("role, status")
+      .eq("circle_id", id)
+      .eq("user_id", user.id)
+      .maybeSingle()
+    if (membershipError) {
+      return NextResponse.json({ error: "Could not verify Circle membership" }, { status: 503 })
+    }
+    if (
+      !membership ||
+      !["active", "approved"].includes(String(membership.status || "")) ||
+      !canAdmin(membership.role)
+    ) {
       return NextResponse.json({ error: "Only the founder and admins can evolve this community" }, { status: 403 })
     }
 
     const body = await request.json()
     const { action, recommendation_id, recommendation } = body
+    if (action !== "dismiss" && action !== "apply") {
+      return NextResponse.json({ error: "Unsupported evolution action" }, { status: 400 })
+    }
 
     if (action === "dismiss") {
+      if (!recommendation_id) return NextResponse.json({ error: "Missing recommendation" }, { status: 400 })
       const { error } = await sb
         .from("community_evolution_recommendations")
         .update({ status: "dismissed" })

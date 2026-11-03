@@ -1,11 +1,12 @@
 import { type NextRequest, NextResponse } from "next/server"
-import { createClient } from "@/lib/supabase"
+import { createServerClient } from "@/lib/supabase"
 import { getUserFromRequest } from "@/lib/server-auth"
+import { checkCirclePrivateAccess } from "@/lib/circle-access"
 
-const supabase = createClient(
-  process.env.NEXT_PUBLIC_SUPABASE_URL || "https://placeholder.supabase.co",
-  process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || "placeholder",
-)
+function getCircleBookmarksClient() {
+  if (!process.env.SUPABASE_SERVICE_ROLE_KEY) return null
+  return createServerClient()
+}
 
 /**
  * GET /api/circles/[id]/bookmarks
@@ -19,8 +20,15 @@ export async function GET(
   try {
     const user = await getUserFromRequest(request)
     if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
+    const supabase = getCircleBookmarksClient()
+    if (!supabase) return NextResponse.json({ error: "Circle bookmarks are unavailable" }, { status: 503 })
 
     const { id: circleId } = await params
+    const access = await checkCirclePrivateAccess(circleId, request.headers.get("authorization"))
+    if (access.isPrivate && !access.canView) {
+      return NextResponse.json({ error: "This Circle is private", locked: true }, { status: 403 })
+    }
+
 
     const { data: saves, error } = await supabase
       .from("circle_post_interactions")
@@ -28,8 +36,8 @@ export async function GET(
         id,
         created_at,
         post:circle_posts!post_id(
-          *,
-          author:profiles!author_id(id, username, display_name, avatar_url, is_verified, is_premium)
+          id, circle_id, content, post_type, status, created_at, like_count, comment_count,
+          author:profiles!author_id(id, username, display_name, avatar_url, is_verified)
         )
       `)
       .eq("user_id", user.id)
@@ -47,7 +55,11 @@ export async function GET(
     const bookmarks = (saves || [])
       .map((save: any) => {
         const post = Array.isArray(save.post) ? save.post[0] : save.post
-        if (!post || String(post.circle_id) !== String(circleId)) return null
+        if (
+          !post ||
+          String(post.circle_id) !== String(circleId) ||
+          (post.status && post.status !== "published")
+        ) return null
         const author = Array.isArray(post.author) ? post.author[0] : post.author
         return {
           id: post.id,

@@ -6,8 +6,8 @@
  * always-visible primary group and a secondary group behind a "More"
  * disclosure, while keeping every route reachable from the same place.
  *
- * Messages is deliberately NOT here: it lives in the profile dropdown, and the
- * unread count rides on the avatar so it is visible with the menu closed.
+ * Messages is a primary destination on desktop and mobile, with its unread
+ * count visible in navigation.
  *
  * Kept out of the component so the rules that matter — in particular "the split
  * must not lose a destination" — can be tested directly.
@@ -44,26 +44,30 @@ export const EMPTY_AUDIENCE: SidebarAudience = {
 }
 
 export const SIDEBAR_NAV: SidebarNavItem[] = [
-  // Primary: the five destinations worth a permanent slot in the rail.
-  { href: "/", label: "Home Feed", group: "primary" },
-  { href: "/explore", label: "Explore & Search", group: "primary" },
-  { href: "/communities", label: "Communities", group: "primary" },
-  { href: "/streams", label: "Live Streams", badge: "LIVE", group: "primary" },
-  { href: "/wallet", label: "Wallet & Gifts", group: "primary" },
+  // These five destinations define the everyday LOOP experience on every device.
+  { href: "/", label: "Home", group: "primary" },
+  { href: "/explore", label: "Discover", group: "primary" },
+  { href: "/create", label: "Create", group: "primary" },
+  { href: "/communities", label: "Circles", group: "primary" },
+  { href: "/messages", label: "Inbox", group: "primary" },
 
-  // Secondary: real features, but not worth competing with the primary five.
+  // Specialist surfaces remain reachable without competing with core social actions.
+  { href: "/chains", label: "Chains", badge: "NEW", group: "secondary" },
+  { href: "/streams", label: "Live", badge: "LIVE", group: "secondary" },
   { href: "/co-loop/studio", label: "Co-Loop Studio", badge: "NEW", group: "secondary" },
+  { href: "/events", label: "Events", group: "secondary" },
+  { href: "/drops", label: "Drops", badge: "NEW", group: "secondary" },
+  { href: "/bookmarks", label: "Saved", group: "secondary" },
+  { href: "/collections", label: "Collections", group: "secondary" },
+  { href: "/invite", label: "Invite Friends", group: "secondary" },
+  { href: "/wallet", label: "Wallet & Gifts", group: "secondary" },
   { href: "/earnings", label: "Creator Studio", group: "secondary" },
   { href: "/developers", label: "Developer Hub", group: "secondary" },
-  { href: "/events", label: "Events Stage", group: "secondary" },
-  { href: "/bookmarks", label: "Saved Bookmarks", group: "secondary" },
-  { href: "/invite", label: "Invite Friends", group: "secondary" },
   { href: "/lounge", label: "Pro Lounge", badge: "PRO", audience: "premium", group: "secondary" },
   { href: "/organization", label: "Organization", badge: "ORG", audience: "organization", group: "secondary" },
   { href: "/loopadmin", label: "Admin Dashboard", badge: "ADMIN", tone: "admin", audience: "admin", group: "secondary" },
   { href: "/team", label: "Team Dashboard", badge: "TEAM", tone: "team", audience: "team", group: "secondary" },
 ]
-
 function isVisible(item: SidebarNavItem, audience: SidebarAudience): boolean {
   switch (item.audience) {
     case undefined:

@@ -30,7 +30,7 @@ export async function GET(
 
     const supabase = createServerClient()
 
-    const [{ data: hashtagInfo }, { data: loops, error: loopsError }, { data: related }] = await Promise.all([
+    const [{ data: hashtagInfo }, { data: loops, error: loopsError }, { data: recentTags }] = await Promise.all([
       supabase.from("hashtags").select("*").eq("tag", tag).maybeSingle(),
       supabase
         .from("loops")
@@ -45,11 +45,12 @@ export async function GET(
         .order("created_at", { ascending: false })
         .limit(60),
       supabase
-        .from("hashtags")
-        .select("tag, usage_count")
-        .neq("tag", tag)
-        .order("usage_count", { ascending: false })
-        .limit(12),
+        .from("loops")
+        .select("hashtags, author_id, author:profiles!author_id(privacy_settings)")
+        .eq("visibility", "public")
+        .is("parent_loop_id", null)
+        .order("created_at", { ascending: false })
+        .limit(300),
     ])
 
     if (loopsError) {
@@ -88,6 +89,22 @@ export async function GET(
       engagement_score: smartEngagementScore(rows[i] || loop),
     }))
 
+    const relatedCounts = new Map<string, number>()
+    for (const row of recentTags || []) {
+      const author = Array.isArray(row.author) ? row.author[0] : row.author
+      const visibility = author?.privacy_settings?.profile_visibility || "public"
+      if (visibility === "private" || visibility === "followers") continue
+      for (const rawTag of row.hashtags || []) {
+        const relatedTag = String(rawTag).toLowerCase().replace(/^#/, "")
+        if (!relatedTag || relatedTag === tag) continue
+        relatedCounts.set(relatedTag, (relatedCounts.get(relatedTag) || 0) + 1)
+      }
+    }
+    const relatedTags = [...relatedCounts.entries()]
+      .sort((left, right) => right[1] - left[1])
+      .slice(0, 12)
+      .map(([relatedTag]) => relatedTag)
+
     const usage =
       Number(hashtagInfo?.usage_count || 0) ||
       normalized.length ||
@@ -100,7 +117,7 @@ export async function GET(
       count: usage,
       trending: Number(hashtagInfo?.trending_score || 0) > 5 || usage >= 5,
       description: `Explore loops tagged with #${tag}`,
-      relatedTags: (related || []).map((r) => r.tag),
+      relatedTags,
       loops: normalized,
       top: [...normalized].sort(
         (a, b) => Number(b.stats?.likes_count || 0) - Number(a.stats?.likes_count || 0),

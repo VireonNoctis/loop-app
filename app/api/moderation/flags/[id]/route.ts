@@ -1,118 +1,94 @@
-import { type NextRequest, NextResponse } from "next/server";
-import { createServerClient } from "@/lib/supabase";
-import { requireModerator } from "@/lib/server-auth";
-import { getUserFromRequest } from "@/lib/server-auth";
+import { type NextRequest, NextResponse } from "next/server"
+import { createServerClient } from "@/lib/supabase"
+import { requireModerator } from "@/lib/server-auth"
+import { isUuid, parseContentFlagReview } from "@/lib/moderation-flags"
 
+export const dynamic = "force-dynamic"
 
-// PUT /api/moderation/flags/[id] - Update a content flag (admin/moderator only)
-async function updateFlag(request: NextRequest, params: Promise<{ id: string }>) {
+type RouteContext = { params: Promise<{ id: string }> }
+
+async function reviewFlag(request: NextRequest, params: Promise<{ id: string }>) {
+  const { user, response } = await requireModerator(request)
+  if (response) return response
+  if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
+
+  const { id } = await params
+  if (!isUuid(id)) return NextResponse.json({ error: "Invalid report ID" }, { status: 400 })
+
+  let body: unknown
   try {
-    const { id } = await params;
-    const { user, response } = await requireModerator(request);
-    if (response || !user) return response;
-
-    const supabase = createServerClient();
-
-    const { status, action_taken, moderator_notes } = await request.json();
-
-    // Validate required fields
-    if (!status) {
-      return NextResponse.json(
-        { error: "Status is required" },
-        { status: 400 }
-      );
-    }
-
-    // Update content flag
-    const { data: flag, error: updateError } = await supabase
-      .from("content_flags")
-      .update({
-        status,
-        action_taken: action_taken || null,
-        moderator_id: user.id,
-        moderator_notes: moderator_notes || null,
-        reviewed_at: new Date().toISOString()
-      })
-      .eq("id", id)
-      .select()
-      .single();
-
-    if (updateError) {
-      console.error("Database update error:", updateError);
-      return NextResponse.json({ error: "Failed to update content flag" }, { status: 500 });
-    }
-
-    // If the flag resulted in user suspension, update the user
-    if (action_taken === "user_suspended" && flag.content_id) {
-      const { error: userUpdateError } = await supabase
-        .from("profiles")
-        .update({ 
-          is_banned: true,
-          banned_until: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString() // 7 days from now
-        })
-        .eq("id", flag.content_id);
-
-      if (userUpdateError) {
-        console.error("Failed to suspend user:", userUpdateError);
-      }
-    }
-
-    // If the flag resulted in content removal, we would delete or hide the content here
-    // This would depend on the content_type of the flag
-
-    return NextResponse.json({
-      success: true,
-      flag,
-    });
-  } catch (error) {
-    console.error("Error updating content flag:", error);
-    return NextResponse.json({ error: "Internal server error" }, { status: 500 });
+    body = await request.json()
+  } catch {
+    return NextResponse.json({ error: "Request body must be valid JSON" }, { status: 400 })
   }
-}
 
-export async function PUT(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
-  return updateFlag(request, params);
-}
+  const supabase = createServerClient()
+  const { data: existing, error: lookupError } = await supabase
+    .from("content_flags")
+    .select("id, content_type, content_id, status")
+    .eq("id", id)
+    .maybeSingle()
 
-export async function PATCH(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
-  return updateFlag(request, params);
-}
-
-// GET /api/moderation/flags/[id] - Get a specific content flag (admin/moderator only)
-export async function GET(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
-  try {
-    const { id } = await params;
-    const { response } = await requireModerator(request);
-    if (response) return response;
-
-    const supabase = createServerClient();
-
-    // Fetch content flag
-    const { data: flag, error } = await supabase
-      .from("content_flags")
-      .select(`
-        *,
-        reporter:profiles!reporter_id(username, display_name, avatar_url, video_avatar_url),
-        content:profiles!content_id(username, display_name, avatar_url, video_avatar_url)
-      `)
-      .eq("id", id)
-      .single();
-
-    if (error) {
-      console.error("Database error:", error);
-      return NextResponse.json({ error: "Failed to fetch content flag" }, { status: 500 });
-    }
-
-    if (!flag) {
-      return NextResponse.json({ error: "Content flag not found" }, { status: 404 });
-    }
-
-    return NextResponse.json({
-      success: true,
-      flag,
-    });
-  } catch (error) {
-    console.error("Error fetching content flag:", error);
-    return NextResponse.json({ error: "Internal server error" }, { status: 500 });
+  if (lookupError) {
+    console.error("Could not load moderation report:", lookupError)
+    return NextResponse.json({ error: "Could not load moderation report" }, { status: 500 })
   }
+  if (!existing) return NextResponse.json({ error: "Moderation report not found" }, { status: 404 })
+  if (existing.status !== "pending") return NextResponse.json({ error: "This report has already been reviewed" }, { status: 409 })
+
+  const parsed = parseContentFlagReview(body, existing.content_type)
+  if (!parsed.ok) return NextResponse.json({ error: parsed.error }, { status: 400 })
+
+  const { data, error } = await supabase.rpc("review_content_flag", {
+    p_flag_id: id,
+    p_moderator_id: user.id,
+    p_status: parsed.value.status,
+    p_action_taken: parsed.value.actionTaken,
+    p_moderator_notes: parsed.value.moderatorNotes,
+  })
+
+  if (error) {
+    console.error("Atomic moderation review failed:", error)
+    if (error.code === "42501") return NextResponse.json({ error: "Moderator access required for this action" }, { status: 403 })
+    if (error.code === "P0002") return NextResponse.json({ error: "Moderation report or target profile not found" }, { status: 404 })
+    if (error.code === "55000") return NextResponse.json({ error: "This report has already been reviewed" }, { status: 409 })
+    if (["22023", "23503"].includes(error.code || "")) return NextResponse.json({ error: error.message }, { status: 400 })
+    if (["42883", "42P01", "42703"].includes(error.code || "")) {
+      return NextResponse.json({ error: "Moderation review is unavailable until the database migration is applied." }, { status: 503 })
+    }
+    return NextResponse.json({ error: "Could not complete moderation review" }, { status: 500 })
+  }
+
+  return NextResponse.json({ success: true, flag: data })
+}
+
+export async function PUT(request: NextRequest, { params }: RouteContext) {
+  return reviewFlag(request, params)
+}
+
+export async function PATCH(request: NextRequest, { params }: RouteContext) {
+  return reviewFlag(request, params)
+}
+
+export async function GET(request: NextRequest, { params }: RouteContext) {
+  const { response } = await requireModerator(request)
+  if (response) return response
+
+  const { id } = await params
+  if (!isUuid(id)) return NextResponse.json({ error: "Invalid report ID" }, { status: 400 })
+
+  const supabase = createServerClient()
+  const { data: flag, error } = await supabase
+    .from("content_flags")
+    .select("*, reporter:profiles!reporter_id(id, username, display_name, avatar_url)")
+    .eq("id", id)
+    .maybeSingle()
+
+  if (error) {
+    console.error("Could not load moderation report:", error)
+    return NextResponse.json({ error: "Could not load moderation report" }, { status: 500 })
+  }
+  if (!flag) return NextResponse.json({ error: "Moderation report not found" }, { status: 404 })
+
+  return NextResponse.json({ success: true, flag })
 }

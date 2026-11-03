@@ -2,6 +2,7 @@ import { type NextRequest, NextResponse } from "next/server"
 import { createServerClient } from "@/lib/supabase"
 import { getUserFromRequest } from "@/lib/server-auth"
 import { broadcastRealtime } from "@/lib/realtime-server"
+import { canWriteCoLoopSession, checkCoLoopInvitationRevocation } from "@/lib/co-loop-session-access"
 
 export const dynamic = "force-dynamic"
 
@@ -28,17 +29,19 @@ function readReactions(value: unknown): ReactionMap {
 async function isParticipant(supabase: any, sessionId: string, userId: string) {
   const { data: session } = await supabase
     .from("co_loop_sessions")
-    .select("owner_id, co_authors, deleted_at")
+    .select("owner_id, co_authors, deleted_at, status")
     .eq("session_id", sessionId)
     .maybeSingle()
 
-  if (!session) return { ok: true, deleted: false }
+  if (!session) return { ok: false, deleted: false }
   if (session.deleted_at) return { ok: false, deleted: true }
-  if (session.owner_id === userId) return { ok: true, deleted: false }
+  const revocation = await checkCoLoopInvitationRevocation(supabase, sessionId, userId)
+  if (revocation.error || revocation.revoked) return { ok: false, deleted: false }
+  if (session.owner_id === userId) return { ok: true, deleted: false, canWrite: canWriteCoLoopSession(session) }
   const inRoster = (Array.isArray(session.co_authors) ? session.co_authors : []).some(
     (c: any) => c?.id === userId,
   )
-  if (inRoster) return { ok: true, deleted: false }
+  if (inRoster) return { ok: true, deleted: false, canWrite: canWriteCoLoopSession(session) }
 
   const { data: openJoin } = await supabase
     .from("open_co_loop_participants")
@@ -47,7 +50,7 @@ async function isParticipant(supabase: any, sessionId: string, userId: string) {
     .eq("user_id", userId)
     .maybeSingle()
 
-  return { ok: Boolean(openJoin), deleted: false }
+  return { ok: Boolean(openJoin), deleted: false, canWrite: canWriteCoLoopSession(session) }
 }
 
 function shapeMessage(row: any, profile: any) {
@@ -85,6 +88,14 @@ export async function GET(request: NextRequest) {
     if (!sessionId) return NextResponse.json({ error: "session_id is required" }, { status: 400 })
 
     const supabase = createServerClient()
+    const membership = await isParticipant(supabase, sessionId, user.id)
+    if (!membership.ok) {
+      return NextResponse.json(
+        { error: membership.deleted ? "This room has been deleted" : "You are not in this room" },
+        { status: membership.deleted ? 410 : 403 },
+      )
+    }
+
     const { data, error } = await supabase
       .from("co_loop_chat_messages")
       .select("id, session_id, sender_id, content, reactions, created_at")
@@ -131,6 +142,10 @@ export async function POST(request: NextRequest) {
         { error: membership.deleted ? "This room has been deleted" : "You are not in this room" },
         { status: membership.deleted ? 410 : 403 },
       )
+    }
+
+    if (!membership.canWrite) {
+      return NextResponse.json({ error: "This Co-Loop is no longer accepting messages" }, { status: 409 })
     }
 
     const { data: inserted, error } = await supabase
@@ -184,6 +199,10 @@ export async function PATCH(request: NextRequest) {
         { error: membership.deleted ? "This room has been deleted" : "You are not in this room" },
         { status: membership.deleted ? 410 : 403 },
       )
+    }
+
+    if (!membership.canWrite) {
+      return NextResponse.json({ error: "This Co-Loop is no longer accepting reactions" }, { status: 409 })
     }
 
     const current = readReactions(message.reactions)

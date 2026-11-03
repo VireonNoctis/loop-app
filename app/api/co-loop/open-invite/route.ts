@@ -266,110 +266,67 @@ export async function PATCH(request: NextRequest) {
       return NextResponse.json({ error: "This session is no longer active" }, { status: 400 })
     }
 
-    const successJoinResponse = async (extra: Record<string, unknown> = {}) => {
-      const { count } = await supabase
-        .from("open_co_loop_participants")
-        .select("id", { count: "exact", head: true })
-        .eq("session_id", session_id)
-      const currentCount = (count || 0) + 1 // +1 for the owner
-      const max = session.max_collaborators || 4
+    const { data: joined, error: joinError } = await supabase.rpc("join_open_co_loop_session", {
+      p_session_id: session_id,
+      p_user_id: user.id,
+    })
+    if (joinError) {
+      console.error("Atomic open Co-Loop join failed:", joinError.message)
+      if (/session_full/.test(joinError.message)) {
+        return NextResponse.json({ error: "This session is full" }, { status: 409 })
+      }
+      if (/session_deleted/.test(joinError.message)) {
+        return NextResponse.json({ error: "This room was deleted by its host" }, { status: 410 })
+      }
+      if (/session_inactive/.test(joinError.message)) {
+        return NextResponse.json({ error: "This Co-Loop is no longer accepting collaborators" }, { status: 410 })
+      }
+      if (/session_not_open/.test(joinError.message)) {
+        return NextResponse.json({ error: "This is not an open invite session" }, { status: 403 })
+      }
+      return NextResponse.json({ error: "Could not join this Co-Loop session" }, { status: 500 })
+    }
+
+    const result = joined as {
+      owner_id: string
+      owner_username: string
+      topic: string
+      current_count: number
+      max: number
+      is_full: boolean
+      already_joined: boolean
+      is_owner: boolean
+      co_author_entry: {
+        id: string
+        username: string
+        display_name: string
+        avatar_url: string | null
+        role: string
+      }
+    }
+
+    if (result.already_joined || result.is_owner) {
       return NextResponse.json({
         success: true,
-        message: "You joined the Co-Loop session!",
-        studio_url: `/co-loop/studio?session=${session_id}`,
-        current_count: currentCount,
-        max,
-        is_full: currentCount >= max,
-        ...extra,
+        message: "You are already in this Co-Loop session.",
+        studio_url: `/co-loop/studio?session=${encodeURIComponent(session_id)}`,
+        current_count: result.current_count,
+        max: result.max,
+        is_full: result.is_full,
+        already_joined: true,
+        is_owner: result.is_owner,
       })
     }
 
-    // Already the owner? Let them straight back in — joining is idempotent,
-    // not an error (the feed card loses its "joined" state on reload).
-    if (session.owner_id === user.id) {
-      return successJoinResponse({ already_joined: true, is_owner: true })
+    const coAuthorEntry = result.co_author_entry
+    const joinerProfile = {
+      id: coAuthorEntry.id,
+      username: coAuthorEntry.username,
+      display_name: coAuthorEntry.display_name,
+      avatar_url: coAuthorEntry.avatar_url,
     }
-
-    // Check if already a participant
-    const { data: existing } = await supabase
-      .from("open_co_loop_participants")
-      .select("id")
-      .eq("session_id", session_id)
-      .eq("user_id", user.id)
-      .maybeSingle()
-
-    if (existing) {
-      return successJoinResponse({ already_joined: true })
-    }
-
-    // Count current participants (owner + participants table)
-    const { count: participantCount } = await supabase
-      .from("open_co_loop_participants")
-      .select("id", { count: "exact", head: true })
-      .eq("session_id", session_id)
-
-    const totalJoined = (participantCount || 0) + 1 // +1 for owner
-    if (totalJoined >= session.max_collaborators) {
-      return NextResponse.json({ error: "This session is full" }, { status: 400 })
-    }
-
-    // Add participant
-    const { error: insertError } = await supabase
-      .from("open_co_loop_participants")
-      .insert({ session_id, user_id: user.id })
-
-    if (insertError) {
-      console.error("Failed to add participant:", insertError)
-      return NextResponse.json({ error: "Failed to join session" }, { status: 500 })
-    }
-
-    // Get user profile for co_authors update
-    const { data: joinerProfile } = await supabase
-      .from("profiles")
-      .select("id, username, display_name, avatar_url, video_avatar_url, is_verified")
-      .eq("id", user.id)
-      .single()
-
-    const coAuthorEntry = {
-      id: user.id,
-      username: joinerProfile?.username || "collaborator",
-      display_name: joinerProfile?.display_name || joinerProfile?.username || "Co-Author",
-      avatar_url: joinerProfile?.avatar_url || null,
-      role: "Co-Author",
-    }
-
-    // Update co_authors in session
-    const currentCoAuthors = Array.isArray(session.co_authors) ? session.co_authors : []
-    const alreadyInCoAuthors = currentCoAuthors.some((c: any) => c.id === user.id)
-    if (!alreadyInCoAuthors) {
-      await supabase
-        .from("co_loop_sessions")
-        .update({
-          co_authors: [...currentCoAuthors, coAuthorEntry],
-          updated_at: new Date().toISOString(),
-        })
-        .eq("session_id", session_id)
-    }
-
-    // Update feed post content_metadata with new count
-    const newCount = totalJoined + 1
-    const isFull = newCount >= session.max_collaborators
-    if (session.feed_post_id) {
-      await supabase
-        .from("loops")
-        .update({
-          content_metadata: {
-            is_open_coloop_invite: true,
-            session_id,
-            max_collaborators: session.max_collaborators,
-            topic: session.open_invite_topic || "",
-            current_participants: newCount,
-            status: isFull ? "full" : "open",
-          },
-        })
-        .eq("id", session.feed_post_id)
-    }
-
+    const newCount = result.current_count
+    const isFull = result.is_full
     // Notify the session owner
     try {
       const { notifyUser } = await import("@/lib/notifications")

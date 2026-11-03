@@ -9,11 +9,12 @@ const CONTENT_TABLES: Record<string, string> = {
   circle_post: "circle_posts",
   comment: "comments",
   reels: "loops",
+  reel: "loops",
   moment: "moments",
 }
 
 // POST /api/admin/moderation/delete-content
-// body: { content_type, content_id }  — content_type: loop | circle_post | comment | reels | moment
+// body: { content_type, content_id }  — content_type: loop | circle_post | comment | reel(s) | moment
 export async function POST(request: NextRequest) {
   try {
     const { user, response } = await requireModerator(request)

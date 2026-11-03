@@ -1,12 +1,12 @@
 import { type NextRequest, NextResponse } from "next/server"
-import { createClient } from "@/lib/supabase"
+import { createServerClient } from "@/lib/supabase"
 import { awardXp } from "@/lib/xp"
 import { getUserFromRequest } from "@/lib/server-auth";
 
-const supabase = createClient(
-  process.env.NEXT_PUBLIC_SUPABASE_URL || "https://placeholder.supabase.co",
-  process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || "placeholder",
-)
+function getCircleCheckinClient() {
+  if (!process.env.SUPABASE_SERVICE_ROLE_KEY) return null
+  return createServerClient()
+}
 
 const REWARD_COINS = 30
 const STREAK_BONUS_COINS = 10
@@ -31,14 +31,16 @@ function computeStreak(days: Set<string>) {
   return streak
 }
 
-async function checkinState(circleId: string, userId: string) {
+async function checkinState(supabase: ReturnType<typeof createServerClient>, circleId: string, userId: string) {
   const since = new Date(Date.now() - 60 * 24 * 60 * 60 * 1000).toISOString()
-  const { data: rows } = await supabase
+  const { data: rows, error } = await supabase
     .from("pro_lounge_checkins")
     .select("checkin_date")
     .eq("circle_id", circleId)
     .eq("user_id", userId)
     .gte("created_at", since)
+
+  if (error) throw new Error("Could not load Circle check-in history")
 
   const days = new Set((rows || []).map((r) => String(r.checkin_date).slice(0, 10)))
   const today = utcDayKey(new Date())
@@ -54,9 +56,21 @@ export async function GET(
   try {
     const user = await getUserFromRequest(request)
     if (!user) return NextResponse.json({ error: "Invalid token" }, { status: 401 })
+    const supabase = getCircleCheckinClient()
+    if (!supabase) return NextResponse.json({ error: "Circle check-ins are unavailable" }, { status: 503 })
 
     const { id: circleId } = await params
-    const state = await checkinState(circleId, user.id)
+    const { data: member, error: memberError } = await supabase
+      .from("circle_members")
+      .select("id")
+      .eq("circle_id", circleId)
+      .eq("user_id", user.id)
+      .in("status", ["active", "approved"])
+      .maybeSingle()
+    if (memberError) return NextResponse.json({ error: "Could not verify Circle membership" }, { status: 503 })
+    if (!member) return NextResponse.json({ error: "You must be an active Circle member" }, { status: 403 })
+
+    const state = await checkinState(supabase, circleId, user.id)
 
     return NextResponse.json({
       success: true,
@@ -78,21 +92,24 @@ export async function POST(
   try {
     const user = await getUserFromRequest(request)
     if (!user) return NextResponse.json({ error: "Invalid token" }, { status: 401 })
+    const supabase = getCircleCheckinClient()
+    if (!supabase) return NextResponse.json({ error: "Circle check-ins are unavailable" }, { status: 503 })
 
     const { id: circleId } = await params
 
     // Only members of this circle can check in (the workspace itself is
     // already Pro-gated by the client, but enforce it server-side too).
-    const { data: member } = await supabase
+    const { data: member, error: memberError } = await supabase
       .from("circle_members")
       .select("id")
       .eq("circle_id", circleId)
       .eq("user_id", user.id)
       .in("status", ["active", "approved"])
       .maybeSingle()
+    if (memberError) return NextResponse.json({ error: "Could not verify Circle membership" }, { status: 503 })
     if (!member) return NextResponse.json({ error: "You must be a member to check in" }, { status: 403 })
 
-    const state = await checkinState(circleId, user.id)
+    const state = await checkinState(supabase, circleId, user.id)
     if (state.claimedToday) {
       return NextResponse.json(
         { error: "You already checked in today — come back tomorrow for your next streak day.", claimed: true, streak: state.streak },

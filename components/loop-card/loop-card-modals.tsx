@@ -13,11 +13,20 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog"
+import {
+  AlertDialog,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog"
+import { HoldToConfirmButton } from "@/components/ui/hold-to-confirm-button"
 import { Textarea } from "@/components/ui/textarea"
 import { GiftModal } from "@/components/gifting/gift-modal"
 import { CreateBranchDialog } from "@/components/create-branch-dialog"
 import { BranchSettingsDialog } from "@/components/loops/branch-settings-dialog"
-import { ConfirmDialog } from "@/components/ui/confirm-dialog"
 import { LoopChainDialog } from "@/components/loops/loop-chain-dialog"
 import { BoostLoopDialog } from "@/components/loops/boost-loop-dialog"
 import { ShareToDmModal } from "@/components/messages/share-to-dm-modal"
@@ -166,16 +175,28 @@ export function LoopCardModals({
         onSaved={onBranchSettingsSaved}
       />
 
-      {/* Delete Confirmation */}
-      <ConfirmDialog
-        open={deleteOpen}
-        onOpenChange={setDeleteOpen}
-        title="Delete this loop?"
-        description="This cannot be undone. Branches from others may remain."
-        confirmLabel="Delete"
-        destructive
-        onConfirm={confirmDelete}
-      />
+      {/* Irreversible deletion requires a deliberate hold, not a stray tap. */}
+      <AlertDialog open={deleteOpen} onOpenChange={setDeleteOpen}>
+        <AlertDialogContent className="max-w-[calc(100vw-2rem)] rounded-2xl border-border bg-popover text-foreground sm:max-w-md">
+          <AlertDialogHeader className="gap-2">
+            <AlertDialogTitle>Delete this Loop?</AlertDialogTitle>
+            <AlertDialogDescription className="text-sm leading-relaxed text-muted-foreground">
+              This cannot be undone. Branches from other people may remain. Press and hold the button to confirm; releasing early cancels the action.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter className="gap-2 sm:gap-2">
+            <AlertDialogCancel className="rounded-full border-border bg-muted text-foreground">
+              Cancel
+            </AlertDialogCancel>
+            <HoldToConfirmButton
+              label="Hold to delete"
+              holdingLabel="Keep holding…"
+              holdDurationMs={900}
+              onConfirm={confirmDelete}
+            />
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
 
       {/* Edit Dialog */}
       <Dialog open={editOpen} onOpenChange={setEditOpen}>

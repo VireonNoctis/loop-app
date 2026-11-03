@@ -281,15 +281,15 @@ export default function EarningsPage() {
                 </CardContent>
               </Card>
 
-              <Card className="border-emerald-500/30 bg-emerald-500/5">
+              <Card className="border-border/60 bg-muted/20">
                 <CardContent className="p-4">
-                  <p className="text-sm font-semibold">Ready to cash out?</p>
+                  <p className="text-sm font-semibold">Loop Coin cashouts</p>
                   <p className="mt-1 text-xs text-muted-foreground">
-                    Request a payout of your available earnings from the Wallet.
+                    Verified creators can request a manual payout from their Loop Coin balance in Wallet. USD creator earnings are tracked separately and are not currently withdrawable.
                   </p>
-                  <Button asChild size="sm" className="mt-3 w-full rounded-lg">
+                  <Button asChild size="sm" variant="outline" className="mt-3 w-full rounded-lg">
                     <Link href="/wallet?tab=withdrawals">
-                      Request Payout <ArrowUpRight className="ml-1 h-3.5 w-3.5" />
+                      Open Wallet <ArrowUpRight className="ml-1 h-3.5 w-3.5" />
                     </Link>
                   </Button>
                 </CardContent>

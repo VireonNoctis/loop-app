@@ -1,22 +1,25 @@
+"use client"
+
 import * as React from "react";
 import { Slot } from "@radix-ui/react-slot";
 import { cva, type VariantProps } from "class-variance-authority";
 
 import { cn } from "@/lib/utils";
+import { hapticTap } from "@/lib/haptics";
 
 const buttonVariants = cva(
-  "inline-flex items-center justify-center gap-2 whitespace-nowrap rounded-lg text-sm font-medium ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:pointer-events-none disabled:opacity-50 [&_svg]:pointer-events-none [&_svg]:size-4 [&_svg]:shrink-0",
+  "loop-tactile relative inline-flex items-center justify-center gap-2 whitespace-nowrap rounded-lg text-sm font-medium ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:pointer-events-none disabled:opacity-50 [&_svg]:pointer-events-none [&_svg]:size-4 [&_svg]:shrink-0",
   {
     variants: {
       variant: {
-        default: "bg-primary text-primary-foreground hover:bg-primary/90 active:scale-[0.98] transition-all duration-200 ease-out",
+        default: "bg-primary text-primary-foreground hover:bg-primary/90 transition-colors duration-150",
         destructive:
-          "bg-destructive text-destructive-foreground hover:bg-destructive/90 active:scale-[0.98] transition-all duration-200 ease-out",
+          "bg-destructive text-destructive-foreground hover:bg-destructive/90 transition-colors duration-150",
         outline:
-          "border border-input bg-background hover:bg-accent hover:text-accent-foreground active:scale-[0.98] transition-all duration-200 ease-out",
+          "border border-input bg-background hover:bg-accent hover:text-accent-foreground transition-colors duration-150",
         secondary:
-          "bg-secondary text-secondary-foreground hover:bg-secondary/80 active:scale-[0.98] transition-all duration-200 ease-out",
-        ghost: "hover:bg-accent hover:text-accent-foreground active:scale-[0.98] transition-all duration-200 ease-out",
+          "bg-secondary text-secondary-foreground hover:bg-secondary/80 transition-colors duration-150",
+        ghost: "loop-tactile-flat hover:bg-accent hover:text-accent-foreground transition-colors duration-150",
         link: "text-primary underline-offset-4 hover:underline",
       },
       size: {
@@ -40,12 +43,19 @@ export interface ButtonProps
 }
 
 const Button = React.forwardRef<HTMLButtonElement, ButtonProps>(
-  ({ className, variant, size, asChild = false, ...props }, ref) => {
+  ({ className, variant, size, asChild = false, onClick, disabled, ...props }, ref) => {
     const Comp = asChild ? Slot : "button"
+    const handleClick = (event: React.MouseEvent<HTMLButtonElement>) => {
+      if (!disabled) hapticTap()
+      onClick?.(event)
+    }
+
     return (
       <Comp
         className={cn(buttonVariants({ variant, size, className }))}
         ref={ref}
+        disabled={disabled}
+        onClick={handleClick}
         {...props}
       />
     )

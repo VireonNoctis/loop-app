@@ -1,207 +1,113 @@
 import { type NextRequest, NextResponse } from "next/server"
 import { createClient } from "@/lib/supabase"
 import { getUserFromRequest } from "@/lib/server-auth"
+import { buildWeeklyPostingActivity, calculateEngagementRate, getMostActivePostingHourUtc, sumCreatorLoopStats } from "@/lib/creator-analytics"
 
 export const dynamic = "force-dynamic"
-
 const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL || "https://placeholder.supabase.co",
-  process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || "placeholder"
+  process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || "placeholder",
 )
+const PAGE_SIZE = 1000
+const DAY_MS = 86_400_000
+
+async function fetchAllRows<T>(buildQuery: () => any): Promise<{ data: T[]; error: any }> {
+  const rows: T[] = []
+  for (let offset = 0; offset < 100_000; offset += PAGE_SIZE) {
+    const { data, error } = await buildQuery().range(offset, offset + PAGE_SIZE - 1)
+    if (error) return { data: [], error }
+    const page = (data || []) as T[]
+    rows.push(...page)
+    if (page.length < PAGE_SIZE) return { data: rows, error: null }
+  }
+  return { data: [], error: new Error("Creator analytics exceeded the supported pagination limit.") }
+}
+
+function rangeBounds(range: string, now: Date): { start: Date | null; previousStart: Date | null; previousEnd: Date | null } | null {
+  if (range === "all") return { start: null, previousStart: null, previousEnd: null }
+  if (range !== "7d" && range !== "30d") return null
+  const days = range === "7d" ? 7 : 30
+  const start = new Date(now.getTime() - days * DAY_MS)
+  return { start, previousStart: new Date(start.getTime() - days * DAY_MS), previousEnd: start }
+}
 
 export async function GET(request: NextRequest) {
   try {
     const user = await getUserFromRequest(request)
     if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
+    const range = new URL(request.url).searchParams.get("range") || "30d"
+    const bounds = rangeBounds(range, new Date())
+    if (!bounds) return NextResponse.json({ error: "Range must be 7d, 30d or all." }, { status: 400 })
 
-    const { searchParams } = new URL(request.url)
-    const range = searchParams.get("range") || "30d"
-
-    const now = new Date()
-    let startDate: Date
-    let prevStartDate: Date
-
-    if (range === "7d") {
-      startDate = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000)
-      prevStartDate = new Date(now.getTime() - 14 * 24 * 60 * 60 * 1000)
-    } else if (range === "30d") {
-      startDate = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000)
-      prevStartDate = new Date(now.getTime() - 60 * 24 * 60 * 60 * 1000)
-    } else {
-      startDate = new Date("2024-01-01")
-      prevStartDate = new Date("2024-01-01")
+    const buildLoopQuery = (start: Date | null, end?: Date | null) => {
+      let query = supabase.from("loops").select("id, content, created_at").eq("author_id", user.id)
+      if (start) query = query.gte("created_at", start.toISOString())
+      if (end) query = query.lt("created_at", end.toISOString())
+      return query.order("created_at", { ascending: false })
+    }
+    const [currentLoopsResult, previousLoopsResult, followersResult] = await Promise.all([
+      fetchAllRows<{ id: string; content: string | null; created_at: string }>(() => buildLoopQuery(bounds.start)),
+      bounds.previousStart && bounds.previousEnd
+        ? fetchAllRows<{ id: string; content: string | null; created_at: string }>(() => buildLoopQuery(bounds.previousStart, bounds.previousEnd))
+        : Promise.resolve({ data: [], error: null }),
+      supabase.from("follows").select("id", { count: "exact", head: true }).eq("following_id", user.id),
+    ])
+    if (currentLoopsResult.error || previousLoopsResult.error || followersResult.error) {
+      console.error("Creator analytics content lookup failed:", currentLoopsResult.error || previousLoopsResult.error || followersResult.error)
+      return NextResponse.json({ error: "Could not load creator analytics." }, { status: 500 })
     }
 
-    const startDateStr = startDate.toISOString()
-    const prevStartDateStr = prevStartDate.toISOString()
-
-    // Fetch user's loops
-    const { data: userLoops } = await supabase
-      .from("loops")
-      .select("id, content, media_url, created_at, is_featured, is_pinned")
-      .eq("author_id", user.id)
-      .gte("created_at", startDateStr)
-      .order("created_at", { ascending: false })
-
-    const loopIds = (userLoops || []).map((l) => l.id)
-
-    // Fetch loop stats in parallel
-    const [viewsResult, likesResult, commentsResult, followersResult, prevViewsResult, prevLikesResult, prevCommentsResult, prevFollowersResult] =
-      await Promise.all([
-        // Current period
-        loopIds.length > 0
-          ? supabase
-              .from("loop_stats")
-              .select("loop_id, views_count, likes_count, comments_count")
-              .in("loop_id", loopIds)
-          : { data: [], error: null },
-        // Total likes received
-        loopIds.length > 0
-          ? supabase
-              .from("loop_interactions")
-              .select("id", { count: "exact", head: true })
-              .in("loop_id", loopIds)
-              .eq("interaction_type", "like")
-          : { data: [], error: null, count: 0 },
-        // Total comments on user's loops
-        loopIds.length > 0
-          ? supabase
-              .from("comments")
-              .select("id", { count: "exact", head: true })
-              .in("loop_id", loopIds)
-          : { data: [], error: null, count: 0 },
-        // Followers
-        supabase
-          .from("follows")
-          .select("id", { count: "exact", head: true })
-          .eq("following_id", user.id),
-        // Previous period views
-        { data: [], error: null }, // simplified — would need prev period loops
-        { data: [], error: null },
-        { data: [], error: null },
-        { data: [], error: null },
-      ])
-
-    // Aggregate stats
-    const stats = viewsResult.data || []
-    const totalViews = stats.reduce((sum: number, s: any) => sum + (s.views_count || 0), 0)
-    const totalLikes = stats.reduce((sum: number, s: any) => sum + (s.likes_count || 0), 0)
-    const totalComments = stats.reduce((sum: number, s: any) => sum + (s.comments_count || 0), 0)
-    const totalFollowers = followersResult.count || 0
-
-    // Previous period (simplified — use 80% as approximation for demo)
-    const prevTotalViews = Math.round(totalViews * 0.82)
-    const prevTotalLikes = Math.round(totalLikes * 0.85)
-    const prevTotalComments = Math.round(totalComments * 0.9)
-    const prevTotalFollowers = Math.max(0, totalFollowers - 5)
-
-    // Calculate changes
-    const viewsChange = prevTotalViews ? ((totalViews - prevTotalViews) / prevTotalViews) * 100 : 0
-    const likesChange = prevTotalLikes ? ((totalLikes - prevTotalLikes) / prevTotalLikes) * 100 : 0
-    const commentsChange = prevTotalComments
-      ? ((totalComments - prevTotalComments) / prevTotalComments) * 100
-      : 0
-    const followersChange = prevTotalFollowers
-      ? ((totalFollowers - prevTotalFollowers) / prevTotalFollowers) * 100
-      : 0
-
-    // Engagement rate
-    const engagementRate = totalViews > 0
-      ? ((totalLikes + totalComments) / totalViews) * 100
-      : 0
-    const prevEngagementRate = prevTotalViews > 0
-      ? ((prevTotalLikes + prevTotalComments) / prevTotalViews) * 100
-      : 0
-    const engagementChange = prevEngagementRate
-      ? engagementRate - prevEngagementRate
-      : 0
-
-    // Weekly activity (last 7 days)
-    const weeklyActivity = new Array(7).fill(0)
-    const dayMap = [1, 2, 3, 4, 5, 6, 0] // Mon-Sun
-    for (const loop of userLoops || []) {
-      const d = new Date(loop.created_at)
-      const dayAgo = (now.getTime() - d.getTime()) / (24 * 60 * 60 * 1000)
-      if (dayAgo <= 7) {
-        weeklyActivity[dayMap[d.getDay()]]++
-      }
+    const currentLoops = currentLoopsResult.data
+    const previousLoops = previousLoopsResult.data
+    const currentIds = currentLoops.map((loop) => loop.id)
+    const previousIds = previousLoops.map((loop) => loop.id)
+    const [currentStatsResult, previousStatsResult] = await Promise.all([
+      currentIds.length ? supabase.from("loop_stats").select("loop_id, views_count, likes_count, comments_count").in("loop_id", currentIds) : Promise.resolve({ data: [], error: null }),
+      previousIds.length ? supabase.from("loop_stats").select("loop_id, views_count, likes_count, comments_count").in("loop_id", previousIds) : Promise.resolve({ data: [], error: null }),
+    ])
+    if (currentStatsResult.error || previousStatsResult.error) {
+      console.error("Creator analytics stat lookup failed:", currentStatsResult.error || previousStatsResult.error)
+      return NextResponse.json({ error: "Could not load creator post statistics." }, { status: 500 })
     }
 
-    // Best posting time
-    const hourCounts = new Array(24).fill(0)
-    for (const loop of userLoops || []) {
-      const hour = new Date(loop.created_at).getHours()
-      hourCounts[hour]++
-    }
-    const bestHour = hourCounts.indexOf(Math.max(...hourCounts))
-    const bestPostingTime =
-      userLoops && userLoops.length > 0
-        ? `${bestHour === 0 ? 12 : bestHour > 12 ? bestHour - 12 : bestHour}:00 ${bestHour >= 12 ? "PM" : "AM"} on weekdays`
-        : null
+    const totals = sumCreatorLoopStats(currentStatsResult.data || [])
+    const previousTotals = sumCreatorLoopStats(previousStatsResult.data || [])
+    const bestPostingTime = getMostActivePostingHourUtc(currentLoops)
+    const statsByLoop = new Map((currentStatsResult.data || []).map((row: any) => [row.loop_id, row]))
+    const top = currentLoops.reduce<{ loop: typeof currentLoops[number]; score: number } | null>((best, loop) => {
+      const stat: any = statsByLoop.get(loop.id)
+      const score = Number(stat?.views_count || 0) + Number(stat?.likes_count || 0) * 3
+      return !best || score > best.score ? { loop, score } : best
+    }, null)
+    const topStat: any = top ? statsByLoop.get(top.loop.id) : null
+    const count = currentLoops.length
 
-    // Top post
-    let topPost = null
-    if (stats.length > 0) {
-      const sorted = [...stats].sort(
-        (a: any, b: any) =>
-          (b.views_count || 0) + (b.likes_count || 0) * 3 -
-          ((a.views_count || 0) + (a.likes_count || 0) * 3)
-      )
-      const topStat = sorted[0]
-      const topLoop = (userLoops || []).find((l) => l.id === topStat.loop_id)
-      if (topLoop) {
-        topPost = {
-          content: topLoop.content || "",
-          views: topStat.views_count || 0,
-          likes: topStat.likes_count || 0,
-          created_at: topLoop.created_at,
-        }
-      }
-    }
-
-    // Recent growth
-    const recentGrowth = [
-      {
-        label: "Total Posts",
-        value: userLoops?.length || 0,
-        trend: (userLoops?.length || 0) > 0 ? ("up" as const) : ("flat" as const),
-      },
-      {
-        label: "Avg. Views per Post",
-        value: userLoops?.length ? Math.round(totalViews / userLoops.length) : 0,
-        trend: viewsChange > 0 ? ("up" as const) : viewsChange < 0 ? ("down" as const) : ("flat" as const),
-      },
-      {
-        label: "Avg. Likes per Post",
-        value: userLoops?.length ? Math.round(totalLikes / userLoops.length) : 0,
-        trend: likesChange > 0 ? ("up" as const) : likesChange < 0 ? ("down" as const) : ("flat" as const),
-      },
-      {
-        label: "Posts This Period",
-        value: userLoops?.length || 0,
-        trend: "up" as const,
-      },
-    ]
-
-    return NextResponse.json({
-      analytics: {
-        totalViews,
-        viewsChange,
-        totalLikes,
-        likesChange,
-        totalComments,
-        commentsChange,
-        totalFollowers,
-        followersChange,
-        engagementRate,
-        engagementChange,
-        bestPostingTime,
-        topPost,
-        weeklyActivity,
-        recentGrowth,
-      },
-    })
-  } catch (error: any) {
+    return NextResponse.json({ analytics: {
+      totalViews: totals.views,
+      totalLikes: totals.likes,
+      totalComments: totals.comments,
+      totalFollowers: Number(followersResult.count || 0),
+      engagementRate: calculateEngagementRate(totals),
+      bestPostingTime,
+      topPost: top ? { content: top.loop.content || "", views: Number(topStat?.views_count || 0), likes: Number(topStat?.likes_count || 0), created_at: top.loop.created_at } : null,
+      weeklyActivity: buildWeeklyPostingActivity(currentLoops),
+      recentGrowth: [
+        { label: "Posts published", value: count },
+        { label: "Average lifetime views per post", value: count ? Math.round(totals.views / count) : 0 },
+        { label: "Average lifetime likes per post", value: count ? Math.round(totals.likes / count) : 0 },
+      ],
+      periodLabel: range === "all" ? "All time" : range === "7d" ? "Last 7 days" : "Last 30 days",
+      comparisonNote: bounds.start
+        ? "Views, likes and comments are lifetime totals on Loops published in this period. They are not impressions generated only during these dates."
+        : "Views, likes and comments are lifetime totals across all of your Loops.",
+      previousPeriod: bounds.start ? {
+        postsPublished: previousLoops.length,
+        lifetimeViewsOnPosts: previousTotals.views,
+        lifetimeLikesOnPosts: previousTotals.likes,
+        lifetimeCommentsOnPosts: previousTotals.comments,
+      } : null,
+    } })
+  } catch (error) {
     console.error("Creator analytics error:", error)
     return NextResponse.json({ error: "Internal server error" }, { status: 500 })
   }

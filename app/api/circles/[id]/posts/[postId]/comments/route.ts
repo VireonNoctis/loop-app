@@ -1,14 +1,35 @@
 import { type NextRequest, NextResponse } from "next/server"
-import { createClient } from "@/lib/supabase"
+import { createServerClient } from "@/lib/supabase"
 import { notifyUser } from "@/lib/notifications"
-import { getUserFromRequest } from "@/lib/server-auth";
+import { getUserFromRequest } from "@/lib/server-auth"
+import { checkCirclePrivateAccess } from "@/lib/circle-access";
 
-const supabase = createClient(process.env.NEXT_PUBLIC_SUPABASE_URL || "https://placeholder.supabase.co", process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || "placeholder")
+function getCircleCommentsClient() {
+  if (!process.env.SUPABASE_SERVICE_ROLE_KEY) return null
+  return createServerClient()
+}
 
 
-export async function GET(_request: NextRequest, { params }: { params: Promise<{ id: string; postId: string }> }) {
+export async function GET(request: NextRequest, { params }: { params: Promise<{ id: string; postId: string }> }) {
   try {
+    const supabase = getCircleCommentsClient()
+    if (!supabase) return NextResponse.json({ error: "Circle comments are unavailable" }, { status: 503 })
+
     const { id: circleId, postId } = await params
+    const access = await checkCirclePrivateAccess(circleId, request.headers.get("authorization"))
+    if (access.isPrivate && !access.canView) {
+      return NextResponse.json({ error: "This Circle is private", locked: true }, { status: 403 })
+    }
+    const { data: parentPost } = await supabase
+      .from("circle_posts")
+      .select("id, status")
+      .eq("id", postId)
+      .eq("circle_id", circleId)
+      .maybeSingle()
+    if (!parentPost || parentPost.status === "hidden") {
+      return NextResponse.json({ error: "Post not found" }, { status: 404 })
+    }
+
     const { data: comments, error } = await supabase
       .from("circle_post_comments")
       .select(
@@ -38,6 +59,9 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
   try {
     const user = await getUserFromRequest(request)
     if (!user) return NextResponse.json({ error: "Invalid token" }, { status: 401 })
+
+    const supabase = getCircleCommentsClient()
+    if (!supabase) return NextResponse.json({ error: "Circle comments are unavailable" }, { status: 503 })
 
     const { id: circleId, postId } = await params
     const body = await request.json().catch(() => ({}))

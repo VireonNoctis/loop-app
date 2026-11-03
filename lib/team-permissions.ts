@@ -16,6 +16,8 @@ export const AVAILABLE_PERMISSIONS = [
   { key: "coloop_sessions", label: "Co-Loop Sessions", description: "Manage co-loop sessions" },
   { key: "account_management", label: "Account Management", description: "Delete or manage user accounts" },
   { key: "health", label: "System Health", description: "View system health and status" },
+  { key: "cache", label: "Cache Management", description: "Inspect and clear platform caches" },
+  { key: "settings", label: "Platform Settings", description: "Manage platform-level settings" },
 ]
 
 export type PermissionKey = (typeof AVAILABLE_PERMISSIONS)[number]["key"]

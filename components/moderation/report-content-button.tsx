@@ -128,9 +128,11 @@ export function ReportContentButton({
           <Textarea
             value={description}
             onChange={(e) => setDescription(e.target.value)}
+            maxLength={1000}
             placeholder="Optional details..."
             className="min-h-[100px] border-border bg-muted"
           />
+          <p className="text-right text-xs text-muted-foreground">{description.length}/1000</p>
           <Button onClick={handleSubmit} disabled={loading} className="w-full bg-red-600 hover:bg-red-500">
             {loading ? "Submitting..." : "Submit report"}
           </Button>

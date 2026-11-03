@@ -76,7 +76,8 @@ import { AdminQuestsPanel } from "@/components/admin/admin-quests-panel"
 import { SystemHealthPanel } from "@/components/admin/system-health-panel"
 import { BanAppealsPanel } from "@/components/admin/ban-appeals-panel"
 import { AdminAccountManagement } from "@/components/admin/admin-account-management"
-import { AdminTeamPermissions } from "@/components/admin/admin-team-permissions"
+import { AdminAccessControl } from "@/components/admin/admin-access-control"
+import { resolveStaffRole } from "@/lib/staff-roles"
 import { CoLoopSessionsPanel } from "@/components/admin/co-loop-sessions-panel"
 import { AdminAnalyticsTab } from "@/components/admin/admin-analytics-tab"
 import { Spinner } from "@/components/ui/skeletons"
@@ -114,7 +115,7 @@ const NAV_GROUPS: {
       { value: "users", label: "Users", icon: Users },
       { value: "moderation", label: "Moderation", icon: Flag },
       { value: "appeals", label: "Ban Appeals", icon: Ban },
-      { value: "team", label: "Team", icon: UsersRound },
+      { value: "team", label: "Access & Roles", icon: UsersRound },
       { value: "organizations", label: "Orgs", icon: Building2 },
       { value: "support", label: "Support", icon: LifeBuoy },
     ],
@@ -171,7 +172,7 @@ const SECTION_DESCRIPTIONS: Record<string, string> = {
   users: "Manage accounts, roles, balances, and verification.",
   moderation: "Review reported content and take action.",
   appeals: "User-submitted ban appeals awaiting review.",
-  team: "Team member permissions and access control.",
+  team: "Staff roles, user permissions, and privileged access history.",
   organizations: "Organization accounts and verification.",
   support: "User support tickets and conversations.",
   revenue: "Revenue, transactions, and payment history.",
@@ -203,14 +204,16 @@ function SidebarNav({
   section,
   onNavigate,
   onNavigateMobile,
+  groups = NAV_GROUPS,
 }: {
   section: string
   onNavigate: (v: string) => void
   onNavigateMobile?: (v: string) => void
+  groups?: typeof NAV_GROUPS
 }) {
   return (
     <nav className="space-y-5">
-      {NAV_GROUPS.map((group) => (
+      {groups.map((group) => (
         <div key={group.label}>
           <p className="mb-1.5 px-3 text-[10px] font-semibold uppercase tracking-widest text-muted-foreground/70">
             {group.label}
@@ -255,8 +258,24 @@ function SidebarNav({
 
 export function AdminDashboard() {
   const searchParams = useSearchParams()
-  const initialTab = searchParams?.get("tab") || "users"
+  const requestedTab = searchParams?.get("tab") || "users"
   const { user, getAuthHeader } = useAuth()
+  const staffRole = resolveStaffRole(user)
+  const isStaff = Boolean(staffRole)
+  const isFullAdmin = staffRole === "developer" || staffRole === "admin"
+  const visibleGroups = useMemo(
+    () => staffRole === "moderator"
+      ? NAV_GROUPS.map((group) => ({
+          ...group,
+          items: group.items.filter((item) => item.value === "moderation" || item.value === "support" || item.value === "appeals" || item.value === "team"),
+        })).filter((group) => group.items.length > 0)
+      : NAV_GROUPS,
+    [staffRole],
+  )
+  const allowedSections = useMemo(
+    () => visibleGroups.flatMap((group) => group.items.map((item) => item.value)),
+    [visibleGroups],
+  )
   const { toast } = useToast()
   const [users, setUsers] = useState<AdminUser[]>([])
   const [stats, setStats] = useState({ total_users: 0, verified: 0, premium: 0, banned: 0, new_this_week: 0 })
@@ -265,12 +284,12 @@ export function AdminDashboard() {
   const [q, setQ] = useState("")
   const [filter, setFilter] = useState("all")
   const [live, setLive] = useState(false)
-  const [section, setSection] = useState(initialTab)
+  const [section, setSection] = useState(requestedTab)
   const [commandPaletteOpen, setCommandPaletteOpen] = useState(false)
   const [drawerOpen, setDrawerOpen] = useState(false)
 
   const loadUsers = useCallback(async () => {
-    if (!user?.is_admin) return
+    if (!isFullAdmin) return
     setLoading(true)
     try {
       const params = new URLSearchParams({ filter, limit: "60" })
@@ -287,14 +306,14 @@ export function AdminDashboard() {
     } finally {
       setLoading(false)
     }
-  }, [user?.is_admin, filter, q, getAuthHeader, toast])
+  }, [isFullAdmin, filter, q, getAuthHeader, toast])
 
   useEffect(() => {
     loadUsers()
   }, [loadUsers])
 
   useEffect(() => {
-    if (!user?.is_admin) return
+    if (!isFullAdmin) return
     const channel = supabase.channel("admin:users", {
       config: { broadcast: { self: false } },
     })
@@ -314,7 +333,7 @@ export function AdminDashboard() {
     return () => {
       void supabase.removeChannel(channel)
     }
-  }, [user?.is_admin])
+  }, [isFullAdmin])
 
   const runAction = async (userId: string, action: string, extra: Record<string, unknown> = {}) => {
     setBusyId(`${userId}:${action}`)
@@ -339,25 +358,32 @@ export function AdminDashboard() {
   }
 
   const navigate = useCallback((v: string) => {
+    if (!allowedSections.includes(v)) return
     setSection(v)
     if (typeof window !== "undefined") {
       const url = new URL(window.location.href)
       url.searchParams.set("tab", v)
       window.history.replaceState(null, "", url.toString())
     }
-  }, [])
+  }, [allowedSections])
+
+  const visibleSection = allowedSections.includes(section) ? section : allowedSections[0] || "moderation"
+
+  useEffect(() => {
+    if (!allowedSections.includes(section)) setSection(allowedSections[0] || "moderation")
+  }, [allowedSections, section])
 
   const currentLabel = useMemo(
-    () => ALL_SECTIONS.find((s) => s.value === section)?.label || "Dashboard",
-    [section],
+    () => ALL_SECTIONS.find((s) => s.value === visibleSection)?.label || "Dashboard",
+    [visibleSection],
   )
-  const currentDescription = SECTION_DESCRIPTIONS[section]
+  const currentDescription = SECTION_DESCRIPTIONS[visibleSection]
   const currentIcon = useMemo(
-    () => ALL_SECTIONS.find((s) => s.value === section)?.icon || BarChart3,
-    [section],
+    () => ALL_SECTIONS.find((s) => s.value === visibleSection)?.icon || BarChart3,
+    [visibleSection],
   )
 
-  if (!user?.is_admin) {
+  if (!isStaff) {
     return (
       <Card>
         <CardContent className="py-16 text-center text-muted-foreground">
@@ -371,7 +397,7 @@ export function AdminDashboard() {
     <div className="flex gap-6">
       {/* Desktop sidebar */}
       <aside className="sticky top-6 hidden h-[calc(100vh-3rem)] w-60 shrink-0 overflow-y-auto rounded-2xl border bg-card/60 p-4 lg:block">
-        <SidebarNav section={section} onNavigate={navigate} />
+        <SidebarNav section={visibleSection} onNavigate={navigate} groups={visibleGroups} />
       </aside>
 
       {/* Main column */}
@@ -389,9 +415,10 @@ export function AdminDashboard() {
                 <SheetTitle className="text-base">Admin sections</SheetTitle>
               </SheetHeader>
               <SidebarNav
-                section={section}
+                section={visibleSection}
                 onNavigate={navigate}
                 onNavigateMobile={() => setDrawerOpen(false)}
+                groups={visibleGroups}
               />
             </SheetContent>
           </Sheet>
@@ -437,7 +464,7 @@ export function AdminDashboard() {
           </Button>
         </div>
 
-        <Tabs value={section} onValueChange={navigate}>
+        <Tabs value={visibleSection} onValueChange={navigate}>
           {/* Users gets the fully redesigned table experience */}
           <TabsContent value="users" className="mt-0 space-y-5">
             <AdminUsersTable
@@ -571,7 +598,7 @@ export function AdminDashboard() {
             <CoLoopSessionsPanel />
           </TabsContent>
           <TabsContent value="team" className="mt-0">
-            <AdminTeamPermissions />
+            <AdminAccessControl />
           </TabsContent>
           <TabsContent value="circle-themes" className="mt-0">
             <ThemePresetManager />

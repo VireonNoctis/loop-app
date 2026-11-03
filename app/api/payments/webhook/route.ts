@@ -1,6 +1,9 @@
 import { type NextRequest, NextResponse } from "next/server"
+import Stripe from "stripe"
 import { createServerClient } from "@/lib/supabase"
 import { notifyUser } from "@/lib/notifications"
+import { syncStripePremiumSubscription } from "@/lib/stripe-premium-subscriptions"
+import { grantStripePremiumCheckout } from "@/lib/stripe-premium-grants"
 
 export async function POST(request: NextRequest) {
   try {
@@ -11,9 +14,6 @@ export async function POST(request: NextRequest) {
         { status },
       )
     }
-
-    // Dynamic import to avoid build-time errors
-    const Stripe = (await import("stripe")).default
 
     const stripe = new Stripe(process.env.STRIPE_SECRET_KEY, {
       // Always use the API version pinned by the installed stripe package.
@@ -43,78 +43,68 @@ export async function POST(request: NextRequest) {
         const session = event.data.object as any
         const metadata = session.metadata || {}
 
+        if (metadata.kind === "premium_subscription" && metadata.user_id) {
+          if (!["paid", "no_payment_required"].includes(session.payment_status)) break
+          const subscriptionValue = session.subscription as string | Stripe.Subscription | null
+          if (!subscriptionValue) break
+          const subscription = typeof subscriptionValue === "string"
+            ? await stripe.subscriptions.retrieve(subscriptionValue)
+            : subscriptionValue
+          await syncStripePremiumSubscription(supabase, subscription)
+          break
+        }
+
         if (metadata.kind === "premium" && metadata.user_id) {
-          const userId = String(metadata.user_id)
-          const days = Math.max(1, Number(metadata.plan_days) || 30)
-          const txId = `stripe_${session.id}`
-
-          // Idempotency: never double-grant on webhook retries.
-          const { data: existingTx } = await supabase
-            .from("wallet_transactions")
-            .select("id")
-            .eq("id", txId)
-            .maybeSingle()
-
-          if (existingTx) {
-            console.log(`Premium checkout ${session.id} already granted, skipping`)
-            break
-          }
-
           if (session.payment_status !== "paid") {
             console.warn(`Premium checkout ${session.id} completed but payment_status=${session.payment_status}`)
             break
           }
 
-          const { data: profile } = await supabase
-            .from("profiles")
-            .select("premium_expires_at")
-            .eq("id", userId)
-            .maybeSingle()
-
-          const now = new Date()
-          const currentExpiry =
-            profile?.premium_expires_at && new Date(profile.premium_expires_at) > now
-              ? new Date(profile.premium_expires_at)
-              : now
-          const expiresAt = new Date(currentExpiry.getTime() + days * 24 * 60 * 60 * 1000)
-
-          const { error: grantError } = await supabase
-            .from("profiles")
-            .update({
-              is_premium: true,
-              premium_expires_at: expiresAt.toISOString(),
-              updated_at: new Date().toISOString(),
-            })
-            .eq("id", userId)
-
-          if (grantError) {
-            console.error("Failed to grant premium from checkout session:", grantError)
+          const userId = String(metadata.user_id)
+          const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
+          if (!uuidPattern.test(userId)) {
+            console.error(`Premium checkout ${session.id} contains an invalid account reference`)
             break
           }
 
+          const requestedDays = Number(metadata.plan_days)
+          const days = Number.isInteger(requestedDays) && requestedDays >= 1 && requestedDays <= 3660
+            ? requestedDays
+            : 30
+          const transactionId = `stripe_${session.id}`
           const amountUsd = typeof session.amount_total === "number" ? session.amount_total / 100 : 0
+          const paymentIntentId = typeof session.payment_intent === "string"
+            ? session.payment_intent
+            : null
 
-          await supabase.from("wallet_transactions").insert({
-            id: txId,
-            user_id: userId,
-            amount_usd: amountUsd,
-            coins_amount: 0,
-            type: "premium_purchase",
-            description: `Loop Pro (${days} days)`,
-            status: "completed",
-            payment_method: "stripe",
-            payment_intent_id: session.payment_intent || null,
-            created_at: new Date().toISOString(),
-          })
-
-          await notifyUser(supabase, {
+          // The SQL function locks the account and commits the entitlement
+          // with the unique transaction row, so concurrent webhook retries
+          // cannot extend Pro more than once for this Checkout Session.
+          const grant = await grantStripePremiumCheckout(supabase, {
             userId,
-            type: "system",
-            title: "Welcome to Loop Pro! 👑",
-            message: `Your Pro membership is active until ${expiresAt.toLocaleDateString()}.`,
-            data: { plan: metadata.plan, premium_expires_at: expiresAt.toISOString() },
-            actionUrl: "/lounge",
+            transactionId,
+            days,
+            amountUsd,
+            paymentIntentId,
+            plan: typeof metadata.plan === "string" ? metadata.plan : null,
           })
+
+          if (!grant.already_processed) {
+            try {
+              await notifyUser(supabase, {
+                userId,
+                type: "system",
+                title: "Welcome to Loop Pro! 👑",
+                message: `Your Pro membership is active until ${new Date(grant.premium_expires_at).toLocaleDateString()}.`,
+                data: { plan: metadata.plan, premium_expires_at: grant.premium_expires_at },
+                actionUrl: "/lounge",
+              })
+            } catch (notificationError) {
+              // Payment and entitlement are already committed. A notification
+              // outage must not cause Stripe to retry a successfully granted purchase.
+              console.error("Could not send Premium activation notification:", notificationError)
+            }
+          }
           break
         }
 
@@ -278,68 +268,39 @@ export async function POST(request: NextRequest) {
         }
         break
       }
-      case "payment_intent.succeeded":
-        const paymentIntent = event.data.object as any
-        await supabase
+      case "payment_intent.succeeded": {
+        const paymentIntent = event.data.object as Stripe.PaymentIntent
+        // The legacy PaymentIntent creator accepted arbitrary prices and metadata.
+        // Keep payment logs reconcilable, but never grant Pro or inventory from
+        // client-authored metadata. Current checkout flows have their own trusted
+        // server-priced session and grant paths.
+        const { error: paymentLogError } = await supabase
           .from("payment_logs")
           .update({ status: "succeeded" })
           .eq("payment_intent_id", paymentIntent.id)
 
-        if (paymentIntent.metadata?.user_id && paymentIntent.metadata?.item_type === "premium") {
-          const expiryDate = new Date()
-          expiryDate.setMonth(expiryDate.getMonth() + 1)
-          await supabase
-            .from("profiles")
-            .update({
-              is_premium: true,
-              premium_expires_at: expiryDate.toISOString(),
-              updated_at: new Date().toISOString(),
-            })
-            .eq("id", paymentIntent.metadata.user_id)
+        if (paymentLogError) {
+          console.error("Could not update legacy PaymentIntent log:", paymentLogError)
+          throw paymentLogError
         }
 
-        if (paymentIntent.metadata?.user_id && paymentIntent.metadata?.item_id) {
-          // This write used to omit item_type, which is NOT NULL with no
-          // default — so the insert failed and a card payment for an item never
-          // reached the buyer's inventory. The catalogue supplies it now.
-          const { data: purchased } = await supabase
-            .from("shop_items")
-            .select("id, name, item_type, category, rarity, item_data, preview_data")
-            .eq("id", paymentIntent.metadata.item_id)
-            .maybeSingle()
-
-          const { error: grantError } = await supabase.from("user_inventory").upsert(
-            {
-              user_id: paymentIntent.metadata.user_id,
-              item_id: paymentIntent.metadata.item_id,
-              item_type: purchased?.item_type || purchased?.category || "accessory",
-              category: purchased?.category || null,
-              rarity: purchased?.rarity || "common",
-              item_name: purchased?.name || null,
-              item_data: purchased?.item_data || {},
-              preview_data: purchased?.preview_data || {},
-              acquired_from: "stripe",
-              acquired_at: new Date().toISOString(),
-              purchased_at: new Date().toISOString(),
-              payment_method: "stripe",
-              source: "stripe",
-            },
-            { onConflict: "user_id,item_id" },
-          )
-          if (grantError) {
-            console.error("Failed to grant purchased item from payment intent:", grantError)
-          }
+        if (paymentIntent.metadata?.item_type === "premium" || paymentIntent.metadata?.item_id) {
+          console.warn("Ignoring entitlement metadata from retired PaymentIntent flow:", paymentIntent.id)
         }
         break
+      }
       case "customer.subscription.created":
-        console.log("Subscription created:", event.data.object.id)
-        break
       case "customer.subscription.updated":
-        console.log("Subscription updated:", event.data.object.id)
+      case "customer.subscription.deleted": {
+        // Stripe may deliver subscription events out of order. The event object
+        // is only a snapshot; retrieve the canonical current object before
+        // syncing entitlements so a delayed update cannot revive a cancelled
+        // subscription or overwrite a newer billing period.
+        const eventSubscription = event.data.object as Stripe.Subscription
+        const subscription = await stripe.subscriptions.retrieve(eventSubscription.id)
+        await syncStripePremiumSubscription(supabase, subscription)
         break
-      case "customer.subscription.deleted":
-        console.log("Subscription cancelled:", event.data.object.id)
-        break
+      }
       case "payment_intent.payment_failed":
         const failedIntent = event.data.object as any
         await supabase

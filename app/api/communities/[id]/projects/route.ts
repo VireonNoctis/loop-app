@@ -1,10 +1,15 @@
 import { type NextRequest, NextResponse } from "next/server"
 import { communityClient, logCommunityActivity, canModerate } from "@/lib/community-engine"
 import { getUserFromRequest } from "@/lib/server-auth"
+import { checkCirclePrivateAccess } from "@/lib/circle-access"
 
 export async function GET(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   try {
     const { id } = await params
+    const access = await checkCirclePrivateAccess(id, request.headers.get("authorization"))
+    if (access.isPrivate && !access.canView) {
+      return NextResponse.json({ error: "This Circle is private", locked: true }, { status: 403 })
+    }
     const sb = communityClient()
 
     const { data: projects, error } = await sb

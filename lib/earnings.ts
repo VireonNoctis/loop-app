@@ -1,11 +1,20 @@
 import type { SupabaseClient } from "@supabase/supabase-js"
 
 /**
- * Credit creator earnings (USD-equivalent from gift coin spend).
- * Coin → earning rate: 100 coins ≈ $1.00 (1 coin = $0.01)
+ * Coin-funded creator gifts convert to a USD-equivalent creator earning.
+ * Balances and the private earnings ledger are committed in one PostgreSQL
+ * transaction and deduplicated by the originating gift reference.
  */
 export function coinsToEarnings(coins: number) {
-  return Math.round(Math.max(0, coins) * 0.01 * 100) / 100
+  if (!Number.isFinite(coins) || coins <= 0) return 0
+  return Math.round(coins * 0.01 * 100) / 100
+}
+
+export interface AwardEarningsResult {
+  available_earnings: number
+  total_earnings: number
+  amount: number
+  already_processed: boolean
 }
 
 export async function awardEarnings(
@@ -17,81 +26,40 @@ export async function awardEarnings(
     reference_id?: string
     description?: string
   },
-) {
-  if (!userId || !amount || amount <= 0) return null
-
-  // Credit profiles.total_earnings/available_earnings exactly once: prefer the
-  // atomic RPC (safe under concurrent gifts), and only fall back to a direct
-  // read-then-write if the RPC itself is unavailable/erroring. Never run both —
-  // that used to double-credit every gift.
-  let credited = false
-  try {
-    const { error: rpcError } = await supabase.rpc("add_user_earnings", {
-      user_id: userId,
-      amount,
-    })
-    if (!rpcError) {
-      credited = true
-    } else {
-      const { error: altRpcError } = await supabase.rpc("add_user_earnings", {
-        p_user_id: userId,
-        amount,
-      })
-      credited = !altRpcError
-    }
-  } catch {
-    credited = false
+): Promise<AwardEarningsResult | null> {
+  if (!userId || !Number.isFinite(amount) || amount <= 0 || amount > 1_000_000) return null
+  if (!meta?.reference_id) {
+    console.error("awardEarnings requires a source reference for idempotency")
+    return null
   }
 
-  let nextAvailable: number | null = null
-  let nextTotal: number | null = null
+  const { data, error } = await supabase.rpc("award_creator_earnings", {
+    p_user_id: userId,
+    p_amount: amount,
+    p_source_type: meta.source || "gift",
+    p_source_id: meta.reference_id,
+    p_description: meta.description || null,
+  })
 
-  if (!credited) {
-    const { data: profile } = await supabase
-      .from("profiles")
-      .select("available_earnings, total_earnings")
-      .eq("id", userId)
-      .maybeSingle()
-
-    nextAvailable = Number(profile?.available_earnings || 0) + amount
-    nextTotal = Number(profile?.total_earnings || 0) + amount
-
-    const { error } = await supabase
-      .from("profiles")
-      .update({
-        available_earnings: nextAvailable,
-        total_earnings: nextTotal,
-        updated_at: new Date().toISOString(),
-      })
-      .eq("id", userId)
-
-    if (error) {
-      console.error("awardEarnings failed:", error.message)
-      return null
-    }
-  } else {
-    const { data: profile } = await supabase
-      .from("profiles")
-      .select("available_earnings, total_earnings")
-      .eq("id", userId)
-      .maybeSingle()
-    nextAvailable = Number(profile?.available_earnings || 0)
-    nextTotal = Number(profile?.total_earnings || 0)
+  if (error) {
+    // Never fall back to a read/modify/write balance update: a missing or
+    // failing migration must fail visibly rather than lose concurrent credits.
+    console.error("awardEarnings atomic credit failed:", error.message)
+    return null
   }
 
-  try {
-    await supabase.from("earnings").insert({
-      user_id: userId,
-      amount,
-      source_type: meta?.source || "gift",
-      source_id: meta?.reference_id || null,
-      currency: "usd",
-      status: "available",
-      processed_at: new Date().toISOString(),
-    })
-  } catch {
-    /* earnings ledger insert is best-effort; profile totals above are the source of truth */
+  const result = (Array.isArray(data) ? data[0] : data) as unknown
+  if (
+    !result
+    || typeof result !== "object"
+    || typeof (result as Record<string, unknown>).available_earnings !== "number"
+    || typeof (result as Record<string, unknown>).total_earnings !== "number"
+    || typeof (result as Record<string, unknown>).already_processed !== "boolean"
+  ) {
+    console.error("awardEarnings returned an invalid database result")
+    return null
   }
 
-  return { available_earnings: nextAvailable, total_earnings: nextTotal, amount }
+  const normalized = result as Omit<AwardEarningsResult, "amount">
+  return { ...normalized, amount, already_processed: normalized.already_processed }
 }

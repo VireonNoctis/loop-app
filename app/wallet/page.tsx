@@ -56,12 +56,9 @@ interface InventoryItem {
 
 interface WithdrawalRequest {
   id: string
-  user_id: string
-  username: string
   coins_amount: number
   estimated_usd: number
   payout_method: string
-  payout_details: string
   status: string
   created_at: string
 }
@@ -120,6 +117,7 @@ function WalletContent() {
   const [withdrawCoins, setWithdrawCoins] = useState<number>(1000)
   const [payoutMethod, setPayoutMethod] = useState("bank")
   const [payoutDetails, setPayoutDetails] = useState("")
+  const [withdrawalRequestKey, setWithdrawalRequestKey] = useState<string | null>(null)
   const [withdrawing, setWithdrawing] = useState(false)
   // Refund flow — request a refund for a recent Stripe purchase
   const [refundRequests, setRefundRequests] = useState<any[]>([])
@@ -359,7 +357,13 @@ function WalletContent() {
       toast({ title: "Insufficient Balance", description: "Withdrawal amount exceeds your current Loop Coin balance.", variant: "destructive" })
       return
     }
+    if (!payoutDetails.trim() || payoutDetails.trim().length > 1000) {
+      toast({ title: "Payout details required", description: "Enter the bank account, PayPal email or crypto wallet details for this request.", variant: "destructive" })
+      return
+    }
 
+    const requestKey = withdrawalRequestKey || crypto.randomUUID()
+    setWithdrawalRequestKey(requestKey)
     setWithdrawing(true)
     try {
       const token = user?.access_token
@@ -367,12 +371,13 @@ function WalletContent() {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
+          "Idempotency-Key": requestKey,
           ...(token ? { Authorization: `Bearer ${token}` } : {}),
         },
         body: JSON.stringify({
           coins_amount: withdrawCoins,
           payout_method: payoutMethod,
-          payout_details: payoutDetails || "Primary Account Payout",
+          payout_details: payoutDetails.trim(),
         }),
       })
 
@@ -383,6 +388,8 @@ function WalletContent() {
           description: data.message,
         })
         setWithdrawOpen(false)
+        setWithdrawalRequestKey(null)
+        setPayoutDetails("")
         fetchWithdrawalRequests()
         fetchWalletData()
       } else {
@@ -914,7 +921,7 @@ function WalletContent() {
                           <div>
                             <p className="font-bold text-foreground">{req.coins_amount.toLocaleString()} Loop Coins → ${req.estimated_usd} USD</p>
                             <p className="text-[11px] text-muted-foreground mt-0.5">
-                              Method: {req.payout_method.toUpperCase()} • {req.payout_details}
+                              Method: {req.payout_method.toUpperCase()}
                             </p>
                           </div>
                         </div>
@@ -1116,7 +1123,7 @@ function WalletContent() {
                 max={balance}
                 step={100}
                 value={withdrawCoins}
-                onChange={(e) => setWithdrawCoins(Number(e.target.value))}
+                onChange={(e) => { setWithdrawCoins(Number(e.target.value)); setWithdrawalRequestKey(null) }}
                 className="mt-1.5 rounded-xl font-bold text-foreground"
               />
               <p className="text-[11px] text-muted-foreground mt-1 flex justify-between">
@@ -1130,12 +1137,12 @@ function WalletContent() {
               <select
                 id="payout-method"
                 value={payoutMethod}
-                onChange={(e) => setPayoutMethod(e.target.value)}
+                onChange={(e) => { setPayoutMethod(e.target.value); setWithdrawalRequestKey(null) }}
                 className="w-full mt-1.5 rounded-xl border border-border bg-background p-2.5 text-xs font-medium"
               >
                 <option value="bank">Direct Bank Transfer (ACH / SEPA)</option>
                 <option value="paypal">PayPal Account</option>
-                <option value="stripe">Stripe Connect Account</option>
+                <option value="crypto">Crypto Wallet</option>
               </select>
             </div>
 
@@ -1143,9 +1150,11 @@ function WalletContent() {
               <Label htmlFor="payout-details" className="text-xs font-semibold">Account Details / Email</Label>
               <Input
                 id="payout-details"
-                placeholder="e.g. Account IBAN or PayPal Email"
+                placeholder="Enter your IBAN, PayPal email or wallet address"
                 value={payoutDetails}
-                onChange={(e) => setPayoutDetails(e.target.value)}
+                required
+                maxLength={1000}
+                onChange={(e) => { setPayoutDetails(e.target.value); setWithdrawalRequestKey(null) }}
                 className="mt-1.5 rounded-xl text-xs"
               />
             </div>
@@ -1157,7 +1166,7 @@ function WalletContent() {
             </Button>
             <Button
               onClick={handleRequestWithdrawal}
-              disabled={withdrawing}
+              disabled={withdrawing || !payoutDetails.trim() || withdrawCoins < 500 || withdrawCoins > balance}
               className="rounded-xl bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white font-semibold"
             >
               {withdrawing ? "Submitting..." : `Request $${(withdrawCoins * 0.01).toFixed(2)} Payout`}

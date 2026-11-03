@@ -1,9 +1,13 @@
 import { type NextRequest, NextResponse } from "next/server";
-import { createClient } from "@/lib/supabase";
+import { createServerClient } from "@/lib/supabase";
 import { notifyUser } from "@/lib/notifications";
-import { getUserFromRequest } from "@/lib/server-auth";
+import { getUserFromRequest } from "@/lib/server-auth"
+import { checkCirclePrivateAccess } from "@/lib/circle-access";
 
-const supabase = createClient(process.env.NEXT_PUBLIC_SUPABASE_URL || "https://placeholder.supabase.co", process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || "placeholder")
+function getCirclePostDetailClient() {
+  if (!process.env.SUPABASE_SERVICE_ROLE_KEY) return null
+  return createServerClient()
+}
 
 
 // Get post details. Comments live under the dedicated
@@ -13,7 +17,27 @@ const supabase = createClient(process.env.NEXT_PUBLIC_SUPABASE_URL || "https://p
 // leftover from an earlier draft that never matched real data.
 export async function GET(request: NextRequest, { params }: { params: Promise<{ id: string, postId: string }> }) {
   try {
+    const supabase = getCirclePostDetailClient()
+    if (!supabase) return NextResponse.json({ error: "Circle post service is unavailable" }, { status: 503 })
     const { id: circleId, postId } = await params
+    const access = await checkCirclePrivateAccess(circleId, request.headers.get("authorization"))
+    if (access.isPrivate && !access.canView) {
+      return NextResponse.json({ error: "This Circle is private", locked: true }, { status: 403 })
+    }
+
+    const viewer = await getUserFromRequest(request)
+    const { data: membership } = viewer
+      ? await supabase.from("circle_members")
+          .select("role, status")
+          .eq("circle_id", circleId)
+          .eq("user_id", viewer.id)
+          .maybeSingle()
+      : { data: null }
+    const canReviewPending = Boolean(
+      membership &&
+      ["active", "approved"].includes(String(membership.status || "")) &&
+      ["owner", "admin", "moderator"].includes(String(membership.role || "")),
+    )
 
     // Fetch post with author info
     const { data: post, error: postError } = await supabase
@@ -30,11 +54,9 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
       return NextResponse.json({ error: "Post not found" }, { status: 404 })
     }
 
-    const viewer = await getUserFromRequest(request)
-
-    // Hidden content is invisible to everyone; moderators restore it from the
-    // management panel, not by opening the post.
-    if (post.status === "hidden") {
+    // Hidden content is invisible to everyone. Pending posts are only visible
+    // to active Circle staff; a guessed detail URL must not bypass feed rules.
+    if (post.status === "hidden" || (post.status && post.status !== "published" && !canReviewPending)) {
       return NextResponse.json({ error: "Post not found" }, { status: 404 })
     }
 
@@ -96,12 +118,14 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
 // Handle post interactions (like, share, etc.)
 export async function POST(request: NextRequest, { params }: { params: Promise<{ id: string, postId: string }> }) {
   try {
-
     const user = await getUserFromRequest(request)
 
     if (!user) {
       return NextResponse.json({ error: "Invalid token" }, { status: 401 })
     }
+
+    const supabase = getCirclePostDetailClient()
+    if (!supabase) return NextResponse.json({ error: "Circle post service is unavailable" }, { status: 503 })
 
     const { id: circleId, postId } = await params
     const body = await request.json() // like, share, save, report, react
@@ -125,7 +149,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
       .select("id")
       .eq("circle_id", circleId)
       .eq("user_id", user.id)
-      .eq("status", "active")
+      .in("status", ["active", "approved"])
       .maybeSingle()
 
     if (!member) {

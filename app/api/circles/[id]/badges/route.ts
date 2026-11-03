@@ -1,11 +1,20 @@
 import { type NextRequest, NextResponse } from "next/server"
 import { createServerClient } from "@/lib/supabase"
 import { getUserFromRequest } from "@/lib/server-auth"
+import { checkCirclePrivateAccess } from "@/lib/circle-access"
 
 /** GET /api/circles/[id]/badges — list circle badges and member progress */
 export async function GET(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   try {
     const { id: circleId } = await params
+    if (!process.env.SUPABASE_SERVICE_ROLE_KEY) {
+      return NextResponse.json({ error: "Circle badges are unavailable" }, { status: 503 })
+    }
+    const access = await checkCirclePrivateAccess(circleId, request.headers.get("authorization"))
+    if (access.isPrivate && !access.canView) {
+      return NextResponse.json({ error: "This Circle is private", locked: true }, { status: 403 })
+    }
+
     const { searchParams } = new URL(request.url)
     const userId = searchParams.get("user_id")
 
@@ -52,19 +61,38 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     const user = await getUserFromRequest(request)
     if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
 
-    const supabase = createServerClient()
+    if (!process.env.SUPABASE_SERVICE_ROLE_KEY) {
+      return NextResponse.json({ error: "Circle badge management is unavailable" }, { status: 503 })
+    }
 
-    // Check membership
-    const { data: member } = await supabase
-      .from("circle_members")
-      .select("role")
-      .eq("circle_id", circleId)
-      .eq("user_id", user.id)
-      .in("role", ["owner", "admin"])
+    const supabase = createServerClient()
+    const { data: circle, error: circleError } = await supabase
+      .from("circles")
+      .select("owner_id")
+      .eq("id", circleId)
       .maybeSingle()
 
-    if (!member) {
-      return NextResponse.json({ error: "Only circle owners and admins can create badges" }, { status: 403 })
+    if (circleError) {
+      return NextResponse.json({ error: "Could not verify Circle ownership" }, { status: 503 })
+    }
+    if (!circle) return NextResponse.json({ error: "Circle not found" }, { status: 404 })
+
+    if (circle.owner_id !== user.id) {
+      const { data: member, error: memberError } = await supabase
+        .from("circle_members")
+        .select("role, status")
+        .eq("circle_id", circleId)
+        .eq("user_id", user.id)
+        .eq("role", "admin")
+        .in("status", ["active", "approved"])
+        .maybeSingle()
+
+      if (memberError) {
+        return NextResponse.json({ error: "Could not verify Circle membership" }, { status: 503 })
+      }
+      if (!member) {
+        return NextResponse.json({ error: "Only the Circle owner or an active admin can create badges" }, { status: 403 })
+      }
     }
 
     const body = await request.json()

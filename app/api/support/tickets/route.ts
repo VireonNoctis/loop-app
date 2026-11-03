@@ -4,7 +4,7 @@ import { getUserFromRequest, requireAdmin } from "@/lib/server-auth"
 
 export const dynamic = "force-dynamic"
 
-const VALID_CATEGORIES = ["technical", "billing", "account", "content", "suggestion", "other"]
+const VALID_CATEGORIES = ["technical", "billing", "account", "content", "suggestion", "privacy", "other"]
 const VALID_PRIORITIES = ["low", "medium", "high"]
 const VALID_STATUSES = ["open", "in_progress", "resolved", "closed"]
 

@@ -50,6 +50,21 @@ interface VerifRequest {
   } | null
 }
 
+interface VerificationAppeal {
+  id: string
+  request_id: string
+  user_id: string
+  reason: string
+  evidence_url: string | null
+  status: "pending" | "accepted" | "rejected"
+  rejection_reason: string | null
+  reviewer_notes: string | null
+  created_at: string
+  reviewed_at: string | null
+  user?: { username: string | null; display_name: string | null; avatar_url: string | null } | null
+  request?: { reason: string | null; verification_type: string | null; status: string } | null
+}
+
 const STATUS_META: Record<string, { label: string; cls: string }> = {
   pending: { label: "Pending", cls: "bg-amber-500/10 text-amber-600 border-amber-500/30" },
   approved: { label: "Approved", cls: "bg-emerald-500/10 text-emerald-600 border-emerald-500/30" },
@@ -72,6 +87,12 @@ export function VerificationRequestsPanel() {
   const { getAuthHeader } = useAuth()
   const { toast } = useToast()
   const [requests, setRequests] = useState<VerifRequest[]>([])
+  const [appeals, setAppeals] = useState<VerificationAppeal[]>([])
+  const [appealsError, setAppealsError] = useState<string | null>(null)
+  const [appealView, setAppealView] = useState<"pending" | "history">("pending")
+  const [appealRejectTarget, setAppealRejectTarget] = useState<VerificationAppeal | null>(null)
+  const [appealRejectionReason, setAppealRejectionReason] = useState("")
+  const [appealActingId, setAppealActingId] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
   const [statusFilter, setStatusFilter] = useState<"pending" | "approved" | "rejected" | "all">("pending")
   const [actingId, setActingId] = useState<string | null>(null)
@@ -82,10 +103,22 @@ export function VerificationRequestsPanel() {
   const load = useCallback(async () => {
     setLoading(true)
     try {
-      const res = await fetch("/api/admin/verification", { headers: getAuthHeader() })
+      const [res, appealsRes] = await Promise.all([
+        fetch("/api/admin/verification", { headers: getAuthHeader() }),
+        fetch("/api/admin/verification/appeals", { headers: getAuthHeader() }),
+      ])
       const data = await res.json()
       if (!res.ok) throw new Error(data.error || "Failed to load requests")
       setRequests(data.requests || [])
+      if (appealsRes.ok) {
+        const appealData = await appealsRes.json()
+        setAppeals(appealData.appeals || [])
+        setAppealsError(null)
+      } else {
+        const appealData = await appealsRes.json().catch(() => ({}))
+        setAppeals([])
+        setAppealsError(appealData.error || "Could not load appeals")
+      }
     } catch (err: any) {
       toast({ title: "Load failed", description: err.message, variant: "destructive" })
     } finally {
@@ -124,15 +157,177 @@ export function VerificationRequestsPanel() {
     }
   }
 
+  const reviewAppeal = async (
+    target: VerificationAppeal,
+    action: "accepted" | "rejected",
+    rejectionReason?: string,
+  ) => {
+    setAppealActingId(target.id)
+    try {
+      const response = await fetch("/api/admin/verification/appeals", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...getAuthHeader() },
+        body: JSON.stringify({
+          appealId: target.id,
+          action,
+          rejectionReason: rejectionReason || undefined,
+        }),
+      })
+      const data = await response.json()
+      if (!response.ok) throw new Error(data.error || "Could not review appeal")
+      toast({
+        title: action === "accepted" ? "Appeal accepted" : "Appeal rejected",
+        description: action === "accepted"
+          ? "The original application has returned to the normal review queue. No badge was granted."
+          : "The applicant will see the review feedback in Verification settings.",
+      })
+      setAppealRejectTarget(null)
+      setAppealRejectionReason("")
+      await load()
+    } catch (error) {
+      toast({
+        title: "Appeal review failed",
+        description: error instanceof Error ? error.message : "Try again.",
+        variant: "destructive",
+      })
+    } finally {
+      setAppealActingId(null)
+    }
+  }
+
   const counts = {
     pending: requests.filter((r) => r.status === "pending").length,
     approved: requests.filter((r) => r.status === "approved").length,
     rejected: requests.filter((r) => r.status === "rejected").length,
   }
   const filtered = statusFilter === "all" ? requests : requests.filter((r) => r.status === statusFilter)
+  const pendingAppeals = appeals.filter((appeal) => appeal.status === "pending")
+  const historicalAppeals = appeals.filter((appeal) => appeal.status !== "pending")
+  const visibleAppeals = appealView === "pending" ? pendingAppeals : historicalAppeals
 
   return (
     <div className="space-y-4">
+      <section className="space-y-3 rounded-2xl border border-border/70 bg-card/50 p-4">
+        <div className="flex flex-wrap items-center gap-2">
+          <div className="min-w-0 flex-1">
+            <h2 className="text-sm font-semibold">Verification appeals</h2>
+            <p className="text-xs text-muted-foreground">A separate review of rejected applications. Accepting an appeal reopens the application; it never grants a checkmark.</p>
+          </div>
+          <div className="flex items-center gap-1 rounded-full bg-muted/60 p-1">
+            <Button
+              size="sm"
+              variant={appealView === "pending" ? "secondary" : "ghost"}
+              className="h-7 rounded-full px-3 text-xs"
+              aria-pressed={appealView === "pending"}
+              onClick={() => setAppealView("pending")}
+            >
+              Pending {pendingAppeals.length}
+            </Button>
+            <Button
+              size="sm"
+              variant={appealView === "history" ? "secondary" : "ghost"}
+              className="h-7 rounded-full px-3 text-xs"
+              aria-pressed={appealView === "history"}
+              onClick={() => setAppealView("history")}
+            >
+              History {historicalAppeals.length}
+            </Button>
+          </div>
+        </div>
+        {appealsError ? (
+          <p className="text-xs text-amber-600">{appealsError}</p>
+        ) : visibleAppeals.length === 0 ? (
+          <p className="rounded-xl border border-dashed p-4 text-center text-xs text-muted-foreground">
+            {appealView === "pending"
+              ? "No verification appeals are awaiting review."
+              : "No verification appeals have been reviewed yet."}
+          </p>
+        ) : (
+          <div className="space-y-3">
+            {visibleAppeals.map((appeal) => {
+              const applicant = appeal.user?.display_name || appeal.user?.username || "Applicant"
+              return (
+                <Card key={appeal.id} className="border-border/60">
+                  <CardContent className="space-y-3 p-3 sm:p-4">
+                    <div className="flex flex-wrap items-start justify-between gap-2">
+                      <div className="min-w-0">
+                        <p className="truncate text-sm font-semibold">{applicant}</p>
+                        {appeal.user?.username && <p className="text-xs text-muted-foreground">@{appeal.user.username}</p>}
+                        <p className="mt-1 text-[11px] text-muted-foreground">
+                          {appeal.request?.verification_type?.replace(/_/g, " ") || "Verification"} · appealed {timeAgo(appeal.created_at)}
+                        </p>
+                      </div>
+                      <Badge
+                        variant="outline"
+                        className={
+                          appeal.status === "pending"
+                            ? "border-amber-500/30 bg-amber-500/10 text-amber-600"
+                            : appeal.status === "accepted"
+                              ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-600"
+                              : "border-red-500/30 bg-red-500/10 text-red-600"
+                        }
+                      >
+                        {appeal.status === "pending" ? "Appeal pending" : appeal.status === "accepted" ? "Accepted" : "Rejected"}
+                      </Badge>
+                    </div>
+                    <div className="space-y-1">
+                      <p className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">Appeal statement</p>
+                      <p className="whitespace-pre-wrap rounded-lg bg-muted/50 p-3 text-xs">{appeal.reason}</p>
+                    </div>
+                    {appeal.evidence_url && (
+                      <a href={appeal.evidence_url} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1.5 text-xs text-primary hover:underline">
+                        <ExternalLink className="h-3 w-3" /> Open additional evidence
+                      </a>
+                    )}
+                    {appeal.status === "pending" ? (
+                      <div className="flex flex-wrap justify-end gap-2">
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          disabled={appealActingId === appeal.id}
+                          onClick={() => {
+                            setAppealRejectTarget(appeal)
+                            setAppealRejectionReason("")
+                          }}
+                        >
+                          Reject appeal
+                        </Button>
+                        <Button
+                          size="sm"
+                          disabled={appealActingId === appeal.id}
+                          onClick={() => reviewAppeal(appeal, "accepted")}
+                        >
+                          {appealActingId === appeal.id ? "Reviewing…" : "Accept appeal"}
+                        </Button>
+                      </div>
+                    ) : (
+                      <div className="space-y-1 rounded-lg border border-border/60 bg-muted/20 p-3">
+                        <p className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+                          {appeal.status === "accepted" ? "Returned to application review" : "Applicant-facing decision"}
+                        </p>
+                        {appeal.rejection_reason && (
+                          <p className="whitespace-pre-wrap text-xs">{appeal.rejection_reason}</p>
+                        )}
+                        {appeal.reviewer_notes && (
+                          <p className="whitespace-pre-wrap text-xs text-muted-foreground">
+                            Internal note: {appeal.reviewer_notes}
+                          </p>
+                        )}
+                        {appeal.reviewed_at && (
+                          <p className="text-[10px] text-muted-foreground">
+                            Reviewed {new Date(appeal.reviewed_at).toLocaleString()}
+                          </p>
+                        )}
+                      </div>
+                    )}
+                  </CardContent>
+                </Card>
+              )
+            })}
+          </div>
+        )}
+      </section>
+
       {/* Filter chips + refresh */}
       <div className="flex flex-wrap items-center gap-2">
         {(["pending", "approved", "rejected", "all"] as const).map((s) => (
@@ -395,6 +590,46 @@ export function VerificationRequestsPanel() {
               )}
             </>
           )}
+        </DialogContent>
+      </Dialog>
+
+      <Dialog
+        open={Boolean(appealRejectTarget)}
+        onOpenChange={(open) => {
+          if (!open) {
+            setAppealRejectTarget(null)
+            setAppealRejectionReason("")
+          }
+        }}
+      >
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>Reject verification appeal</DialogTitle>
+            <DialogDescription>
+              A concise reason will be visible to {appealRejectTarget?.user?.display_name || appealRejectTarget?.user?.username || "the applicant"}.
+            </DialogDescription>
+          </DialogHeader>
+          <Textarea
+            value={appealRejectionReason}
+            onChange={(event) => setAppealRejectionReason(event.target.value.slice(0, 2000))}
+            placeholder="Explain why the original decision will remain unchanged."
+            rows={4}
+          />
+          <DialogFooter className="gap-2">
+            <Button variant="ghost" onClick={() => {
+              setAppealRejectTarget(null)
+              setAppealRejectionReason("")
+            }}>
+              Cancel
+            </Button>
+            <Button
+              variant="destructive"
+              disabled={appealRejectionReason.trim().length < 10 || appealActingId === appealRejectTarget?.id}
+              onClick={() => appealRejectTarget && reviewAppeal(appealRejectTarget, "rejected", appealRejectionReason.trim())}
+            >
+              Reject appeal
+            </Button>
+          </DialogFooter>
         </DialogContent>
       </Dialog>
 

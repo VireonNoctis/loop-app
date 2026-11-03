@@ -36,6 +36,8 @@ import {
   Palette,
 } from "lucide-react"
 import { useTheme } from "next-themes"
+import { AnimatedIconView } from "@/components/icons/animated/animated-icon-view"
+import MagnifierIcon from "@/components/icons/animated/magnifier-icon"
 import { useAuth } from "@/hooks/use-auth"
 import { NotificationDropdown } from "@/components/notifications/notification-dropdown"
 import { ThemeToggle } from "@/components/theme-toggle"
@@ -114,7 +116,7 @@ export function Header() {
     )
   }
 
-  const isAdmin = user.is_admin || (user as any).role === "admin" || user.email === "useehamza0@gmail.com"
+  const isAdmin = Boolean(user.staff_role || user.is_admin || user.is_moderator)
 
   return (
     <header className="sticky top-0 z-40 w-full border-b border-border/70 bg-background/85 backdrop-blur-xl supports-[backdrop-filter]:bg-background/70">
@@ -133,7 +135,7 @@ export function Header() {
           {mobileSearchOpen ? (
             <form onSubmit={handleSearch} className="flex items-center gap-1 w-full max-w-xs animate-in fade-in duration-150">
               <div className="relative flex-1">
-                <Search className="absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
+                <AnimatedIconView component={MagnifierIcon} size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" />
                 <Input
                   type="text"
                   autoFocus
@@ -178,7 +180,7 @@ export function Header() {
               onClick={() => setMobileSearchOpen(true)}
               title="Search"
             >
-              <Search className="h-4 w-4 text-muted-foreground" />
+              <AnimatedIconView component={MagnifierIcon} size={17} />
             </Button>
           )}
 

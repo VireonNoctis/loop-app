@@ -35,6 +35,7 @@ import { usePfpFrame } from "@/hooks/use-pfp-frame"
 import { useVerificationBadges } from "@/hooks/use-verification-badges"
 import { ProfileAboutTab } from "@/components/profile/profile-about-tab"
 import { ProfileCompletionIndicator } from "@/components/profile/profile-completion"
+import { ProfileCreativeWork } from "@/components/profile/profile-creative-work"
 import { ActivityHeatmap } from "@/components/profile/activity-heatmap"
 import { ProfileMediaGrid } from "@/components/profile/profile-media-grid"
 import { SimilarCreators } from "@/components/profile/similar-creators"
@@ -45,7 +46,9 @@ import { useProfileNote } from "@/hooks/use-profile-note"
 import { NoteBubble } from "@/components/notes/note-bubble"
 import { NoteComposer } from "@/components/notes/note-composer"
 import { ProfileAwards, ProfileAwardsGrid } from "@/components/profile/profile-awards"
+import { ProfileAchievementShowcase } from "@/components/profile/profile-achievement-showcase"
 import { stripCircleBioTokens } from "@/lib/circle-bio-tokens"
+import { isRustApiUnavailable, rustApiRequest } from "@/lib/rust-api"
 import { EnhancedMediaViewer } from "@/components/media/enhanced-media-viewer"
 
 interface Achievement {
@@ -173,6 +176,33 @@ export function Enhanced3DProfile({ username }: { username: string }) {
         setFollowRequestPending(Boolean(newProfile?.has_pending_follow_request))
         setIsPrivateProfile(Boolean(newProfile?.is_private))
         setCanViewFull(newProfile?.can_view_full !== false)
+
+        // The Rust social graph is the write authority. Refresh the relationship
+        // state from the same API so profile controls don't depend on the legacy
+        // Next.js follow route during the staged migration.
+        if (user && newProfile?.id && newProfile.id !== user.id && !newProfile?.is_blocked) {
+          try {
+            const followState = await rustApiRequest<{
+              is_following: boolean
+              has_pending_follow_request: boolean
+              is_private: boolean
+              followers_count: number
+              following_count: number
+            }>(`users/${encodeURIComponent(newProfile.id)}/follow-state`, {
+              headers: getAuthHeader(),
+            })
+            setIsFollowing(followState.is_following)
+            setFollowRequestPending(followState.has_pending_follow_request)
+            setIsPrivateProfile(followState.is_private)
+            setProfile((current) => {
+              if (!current || current.id !== newProfile.id) return current
+              return { ...current, followers_count: followState.followers_count }
+            })
+          } catch {
+            // Keep the existing profile payload as a compatibility fallback
+            // until the Rust API is deployed for this environment.
+          }
+        }
         // Sync only slim auth fields for own profile — never full payload.
         // Only update if the username actually differs to avoid unnecessary auth
         // state churn that can trigger re-render loops.
@@ -282,15 +312,23 @@ export function Enhanced3DProfile({ username }: { username: string }) {
     // If we already have a pending request, clicking again withdraws it.
     if (!isFollowing && followRequestPending) {
       try {
-        const cancelRes = await fetch("/api/users/follow-requests", {
-          method: "POST",
-          headers: { "Content-Type": "application/json", ...getAuthHeader() },
-          body: JSON.stringify({ action: "withdraw", target_user_id: profile.id }),
-        })
-        if (cancelRes.ok) {
-          setFollowRequestPending(false)
-          toast({ title: "Follow request withdrawn" })
+        try {
+          await rustApiRequest<void>(`users/${encodeURIComponent(profile.id)}/follow-request`, {
+            method: "DELETE",
+            headers: getAuthHeader(),
+          })
+        } catch (error) {
+          if (!isRustApiUnavailable(error)) throw error
+          // Legacy compatibility while the Rust API is not yet deployed.
+          const cancelRes = await fetch("/api/users/follow-requests", {
+            method: "POST",
+            headers: { "Content-Type": "application/json", ...getAuthHeader() },
+            body: JSON.stringify({ action: "withdraw", target_user_id: profile.id }),
+          })
+          if (!cancelRes.ok) throw new Error("Could not withdraw follow request")
         }
+        setFollowRequestPending(false)
+        toast({ title: "Follow request withdrawn" })
       } catch {
         /* keep pending */
       }
@@ -310,20 +348,34 @@ export function Enhanced3DProfile({ username }: { username: string }) {
         : null,
     )
     try {
-      const response = await fetch("/api/users/follow", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          ...getAuthHeader(),
-        },
-        body: JSON.stringify({
-          target_user_id: profile.id,
-          action: nextAction,
-        }),
-      })
-      const data = await response.json().catch(() => ({}))
-      if (!response.ok) {
-        throw new Error(data.error || "Follow failed")
+      let data: {
+        success?: boolean
+        is_following?: boolean
+        requires_approval?: boolean
+        has_pending_follow_request?: boolean
+        followers_count?: number
+        following_count?: number
+        error?: string
+      }
+      try {
+        data = await rustApiRequest(`users/${encodeURIComponent(profile.id)}/follow`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", ...getAuthHeader() },
+          body: JSON.stringify({ action: nextAction }),
+        })
+      } catch (error) {
+        if (!isRustApiUnavailable(error)) throw error
+        // Keep existing users working while the Rust service is rolled out.
+        const response = await fetch("/api/users/follow", {
+          method: "POST",
+          headers: { "Content-Type": "application/json", ...getAuthHeader() },
+          body: JSON.stringify({
+            target_user_id: profile.id,
+            action: nextAction,
+          }),
+        })
+        data = await response.json().catch(() => ({}))
+        if (!response.ok) throw new Error(data.error || "Follow failed")
       }
       if (data.requires_approval) {
         // Private profile — the follow is now pending approval.
@@ -341,8 +393,12 @@ export function Enhanced3DProfile({ username }: { username: string }) {
       if (data.requires_approval === undefined || data.is_following === true) {
         setFollowRequestPending(false)
       }
-      if (typeof data.followers_count === "number") {
-        setProfile((prev) => (prev ? { ...prev, followers_count: data.followers_count } : prev))
+      const updatedFollowersCount = data.followers_count
+      if (typeof updatedFollowersCount === "number") {
+        setProfile((prev) => {
+          if (!prev) return prev
+          return { ...prev, followers_count: updatedFollowersCount }
+        })
       }
     } catch (error: any) {
       setIsFollowing(previousFollowing)
@@ -1058,6 +1114,7 @@ export function Enhanced3DProfile({ username }: { username: string }) {
             { id: "loops", label: "Loops" },
             { id: "branches", label: "Branches" },
             { id: "media", label: "Media" },
+            { id: "work", label: "Creative work" },
             { id: "awards", label: "Awards" },
           ].map((tab) => (
             <TabsTrigger
@@ -1184,11 +1241,27 @@ export function Enhanced3DProfile({ username }: { username: string }) {
           />
         </TabsContent>
 
-        <TabsContent value="awards" className="mt-0 p-4">
+        <TabsContent value="work" className="mt-0 p-4">
+          <ProfileCreativeWork userId={profile.id} />
+        </TabsContent>
+
+        <TabsContent value="awards" className="mt-0 space-y-6 p-4">
           {profile.id ? (
-            <ProfileAwardsGrid userId={profile.id} />
+            <>
+              <ProfileAchievementShowcase
+                userId={profile.id}
+                getAuthHeader={getAuthHeader}
+              />
+              <section className="space-y-3">
+                <div>
+                  <h2 className="text-sm font-semibold">Community awards</h2>
+                  <p className="text-xs text-muted-foreground">Special recognition granted by the Loop team.</p>
+                </div>
+                <ProfileAwardsGrid userId={profile.id} />
+              </section>
+            </>
           ) : (
-            <EmptyBlock icon={Trophy} label="No awards yet" />
+            <EmptyBlock icon={Trophy} label="No achievements yet" />
           )}
         </TabsContent>
       </Tabs>

@@ -98,7 +98,18 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
       .maybeSingle()
     if (!membership) return NextResponse.json({ error: "Not a member" }, { status: 403 })
 
-    const body = await request.json()
+    const { data: conversation, error: conversationError } = await supabase
+      .from("conversations")
+      .select("is_group")
+      .eq("id", id)
+      .maybeSingle()
+    if (conversationError) {
+      return NextResponse.json({ error: "Could not verify group conversation" }, { status: 500 })
+    }
+    if (!conversation) return NextResponse.json({ error: "Conversation not found" }, { status: 404 })
+    if (!conversation.is_group) return NextResponse.json({ error: "Not a group" }, { status: 400 })
+
+    const body = await request.json().catch(() => ({}))
     const updates: Record<string, any> = {}
 
     // Admin/owner can update most settings

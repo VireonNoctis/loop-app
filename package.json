@@ -15,7 +15,8 @@
     "db:setup:production": "node scripts/run-production-setup.mjs",
     "db:setup:production:seed": "node scripts/run-production-setup.mjs --with-seed",
     "db:apply:pending": "node scripts/apply-pending-schema.mjs",
-    "check:og": "node scripts/check-og.mjs"
+    "check:og": "node scripts/check-og.mjs",
+    "test:responsive": "node scripts/responsive-browser-smoke.mjs"
   },
   "dependencies": {
     "@100mslive/react-sdk": "^0.12.7",
@@ -124,6 +125,6 @@
     "vitest": "^4.1.11"
   },
   "engines": {
-    "node": ">=20"
+    "node": ">=22"
   }
 }

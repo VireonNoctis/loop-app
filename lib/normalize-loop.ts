@@ -94,6 +94,8 @@ export type NormalizedLoop = {
   }>
   content_metadata?: Record<string, any> | null
   is_spoiler?: boolean
+  /** Why this item was surfaced by Discover; omitted for non-personalized feeds. */
+  discovery_reason?: string
   /** ML recommendation engine extras (For You tab) */
   recommendation_reason?: string
   match_percentage?: number
@@ -236,6 +238,7 @@ export function normalizeLoop(row: any, interactionTypes: string[] = []): Normal
     is_spoiler: Boolean(
       row?.is_spoiler ?? row?.content_metadata?.is_spoiler ?? false
     ),
+    discovery_reason: typeof row?.discovery_reason === "string" ? row.discovery_reason : undefined,
     content_metadata:
       row?.content_metadata && typeof row.content_metadata === "object" ? row.content_metadata : null,
   }
