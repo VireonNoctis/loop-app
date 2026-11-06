@@ -531,7 +531,7 @@ export function Enhanced3DProfile({ username }: { username: string }) {
   const xpProgress = Math.min(100, Math.round(((xp - prevXp) / Math.max(1, nextXp - prevXp)) * 100))
 
   return (
-    <div className="mx-auto w-full max-w-6xl bg-background min-h-screen" data-profile-custom-css>
+    <div className="mx-auto w-full max-w-6xl bg-background min-h-screen profile-page" data-profile-custom-css>
       {profile.profile_custom_css ? (
         <style data-profile-custom-css-style>{profile.profile_custom_css}</style>
       ) : null}
