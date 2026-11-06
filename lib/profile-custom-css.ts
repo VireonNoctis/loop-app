@@ -193,7 +193,15 @@ export function validateProfileCustomCss(input: unknown): ProfileCustomCssValida
     }
 
     const scopedSelectors = selectors
-      .map((selector) => `[data-profile-custom-css] ${selector}`)
+      .map((selector) => {
+        if (selector === ":scope" || /^:scope(?=$|[\\s>+~:.#\\[])/.test(selector)) {
+          return `[data-profile-custom-css]${selector.slice(":scope".length)}`
+        }
+        if (selector === ".profile-page" || /^\\.profile-page(?=$|[\\s>+~:.#\\[])/.test(selector)) {
+          return `[data-profile-custom-css].profile-page${selector.slice(".profile-page".length)}`
+        }
+        return `[data-profile-custom-css] ${selector}`
+      })
       .join(", ");
     scopedRules.push(`${scopedSelectors} { ${declarations.join("; ")}; }`);
   }
