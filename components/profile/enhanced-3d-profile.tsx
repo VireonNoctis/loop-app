@@ -65,6 +65,7 @@ interface UserProfile {
   username: string
   display_name: string
   bio?: string
+  profile_custom_css?: string | null
   tagged_circles?: Array<{ id: string; name: string; avatar_url?: string | null }>
   avatar_url?: string
   banner_url?: string
@@ -530,7 +531,10 @@ export function Enhanced3DProfile({ username }: { username: string }) {
   const xpProgress = Math.min(100, Math.round(((xp - prevXp) / Math.max(1, nextXp - prevXp)) * 100))
 
   return (
-    <div className="mx-auto w-full max-w-6xl bg-background min-h-screen">
+    <div className="mx-auto w-full max-w-6xl bg-background min-h-screen" data-profile-custom-css>
+      {profile.profile_custom_css ? (
+        <style data-profile-custom-css-style>{profile.profile_custom_css}</style>
+      ) : null}
       {/* Profile top bar. It is stretched under the site Header (h-14, so
           top-14 keeps it flush — a mismatch here left a gap of page content
           showing between the two bars) and -mb-14 cancels its own h-14 out of
