@@ -197,7 +197,7 @@ export function validateProfileCustomCss(input: unknown): ProfileCustomCssValida
         if (selector === ":scope" || /^:scope(?=$|[\s>+~:.#\[])/.test(selector)) {
           return `[data-profile-custom-css]${selector.slice(":scope".length)}`
         }
-        if (selector === ".profile-page" || /^\\.profile-page(?=$|[\\s>+~:.#\\[])/.test(selector)) {
+        if (selector === ".profile-page" || /^\.profile-page(?=$|[\s>+~:.#\[])/.test(selector)) {
           return `[data-profile-custom-css].profile-page${selector.slice(".profile-page".length)}`
         }
         return `[data-profile-custom-css] ${selector}`
