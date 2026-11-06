@@ -917,7 +917,7 @@ export function EnhancedSettings() {
                   </div>
                   <div className="space-y-2">
                     <Label>Live preview</Label>
-                    <div className="overflow-hidden rounded-xl border border-border" data-profile-custom-css>
+                    <div className="profile-page overflow-hidden rounded-xl border border-border" data-profile-custom-css>
                       {profileCssValidation.valid && profileCssValidation.scopedCss ? (
                         <style>{profileCssValidation.scopedCss}</style>
                       ) : null}
