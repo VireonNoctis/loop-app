@@ -16,6 +16,13 @@ describe("validateProfileCustomCss", () => {
     expect(result.scopedCss).toContain("[data-profile-custom-css] h2:hover");
   });
 
+  it("allows styling the profile wrapper without escaping its boundary", () => {
+    const result = validateProfileCustomCss(".profile-page { background-color: #111827; }");
+
+    expect(result.valid).toBe(true);
+    expect(result.scopedCss).toContain("[data-profile-custom-css].profile-page");
+  });
+
   it("allows an empty value so a saved profile style can be cleared", () => {
     expect(validateProfileCustomCss("   ")).toMatchObject({
       valid: true,
