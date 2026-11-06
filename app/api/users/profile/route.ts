@@ -4,6 +4,7 @@ import { normalizeLoops } from "@/lib/normalize-loop"
 import { enrichLoopsWithPollsAndDuels } from "@/lib/enrich-loops"
 import { getUserFromRequest } from "@/lib/server-auth"
 import { isProUser } from "@/lib/pro-features"
+import { validateProfileCustomCss } from "@/lib/profile-custom-css"
 import { maskProfile, profileStatus } from "@/lib/user-status"
 import { applyRealCommentCounts, attachParentAuthors } from "@/lib/loop-stats"
 import { checkBlockStatus } from "@/lib/user-blocks"
@@ -283,6 +284,9 @@ export async function GET(request: NextRequest) {
       achievements: profile.achievements ?? [],
       active_theme: profile.active_theme ?? null,
       theme_preferences: profile.theme_preferences ?? null,
+      profile_custom_css: isProUser(profile as any)
+        ? validateProfileCustomCss(profile.profile_custom_css).scopedCss
+        : "",
       active_effects: activeItems || [],
       active_cosmetics:
         profile.active_cosmetics && Object.keys(profile.active_cosmetics || {}).length
