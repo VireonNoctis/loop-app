@@ -167,6 +167,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       banner_url: profileData.banner_url ?? previous?.banner_url,
       video_cover_url: profileData.video_cover_url ?? previous?.video_cover_url ?? null,
       bio: profileData.bio ?? previous?.bio,
+      profile_custom_css: profileData.profile_custom_css ?? previous?.profile_custom_css ?? null,
       tagged_circles: Array.isArray(profileData.tagged_circles)
         ? profileData.tagged_circles
         : previous?.tagged_circles ?? [],
