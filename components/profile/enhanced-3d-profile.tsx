@@ -547,7 +547,7 @@ export function Enhanced3DProfile({ username }: { username: string }) {
           the cover. */}
       <div
         className={cn(
-          "sticky top-14 z-30 -mb-14 flex h-14 items-center gap-3 border-b px-3 transition-colors duration-200 sm:gap-4",
+          "sticky top-14 z-30 -mb-14 flex h-14 items-center gap-3 border-b px-3 transition-colors duration-200 sm:gap-4 profile-topbar",
           scrolled ? "border-border bg-background" : "border-transparent bg-transparent"
         )}
       >
@@ -592,7 +592,7 @@ export function Enhanced3DProfile({ username }: { username: string }) {
 
       <div className="lg:px-4 lg:pt-4">
       {/* Banner — animated cover with upload button */}
-      <div className="relative">
+      <div className="relative profile-cover">
       <div
         role={profile.banner_url || (profile as any).video_cover_url ? "button" : undefined}
         tabIndex={profile.banner_url || (profile as any).video_cover_url ? 0 : -1}
@@ -800,13 +800,13 @@ export function Enhanced3DProfile({ username }: { username: string }) {
           </div>
         </div>
 
-        <div className="mt-3 space-y-3">
+        <div className="mt-3 space-y-3 profile-identity">
           <div>
             <div className="flex flex-wrap items-center gap-1.5">
               {/* The mark needs real air beside the name — a hairline gap still
                   reads as part of the word at these sizes. */}
               <div className="flex items-center gap-2.5">
-                <h2 className="text-xl font-extrabold tracking-tight" style={fontStyle(cosmetics.font)}>
+                <h2 className="text-xl font-extrabold tracking-tight profile-display-name" style={fontStyle(cosmetics.font)}>
                   {displayName}
                 </h2>
                 <UserBadges
@@ -839,9 +839,9 @@ export function Enhanced3DProfile({ username }: { username: string }) {
           </div>
 
           {profile.bio ? (
-            <RichContent text={profile.bio} className="text-[15px] leading-relaxed" showPreviewCard={false} />
+            <RichContent text={profile.bio} className="text-[15px] leading-relaxed profile-bio" showPreviewCard={false} />
           ) : (
-            <p className="text-[15px] leading-relaxed text-muted-foreground">
+            <p className="text-[15px] leading-relaxed text-muted-foreground profile-bio">
               Building thoughtful communities with depth, style, and signal.
             </p>
           )}
