@@ -31,6 +31,8 @@ const files = [
   "backend/migrations/0006_chain_lifecycle.sql",
   // Recurring LOOP Pro subscriptions and auditable billing grants.
   "scripts/premium-subscriptions-migration.sql",
+  // Pro-only custom profile CSS storage.
+  "scripts/profile-custom-css-schema.sql",
   "scripts/launch-schema-alignment.sql",
   // Creator earnings columns, private ledger and atomic source-idempotent grants.
   "scripts/creator-earnings-lifecycle.sql",
