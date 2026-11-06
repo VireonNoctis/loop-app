@@ -895,7 +895,7 @@ export function EnhancedSettings() {
                         setFormData((prev) => ({ ...prev, profile_custom_css: event.target.value }))
                       }
                       className="min-h-[240px] resize-y font-mono text-xs leading-relaxed"
-                      placeholder={".profile-name {\n  color: #a78bfa;\n  text-shadow: 0 0 14px rgba(167, 139, 250, .35);\n}\n\n.profile-card {\n  border-radius: 20px;\n  border-color: #a78bfa;\n}"}
+                      placeholder={".profile-display-name {\n  color: #a78bfa;\n  text-shadow: 0 0 14px rgba(167, 139, 250, .35);\n}\n\n.profile-cover {\n  border-radius: 20px;\n}"}
                     />
                     <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
                       <span className="text-muted-foreground">
@@ -914,6 +914,20 @@ export function EnhancedSettings() {
                   <div className="rounded-xl border border-border bg-muted/30 p-3 text-xs text-muted-foreground">
                     Allowed: colours, backgrounds, typography, borders, shadows, spacing and gradients.
                     At-rules, scripts, remote assets and page-wide selectors are blocked.
+                  </div>
+                  <div className="space-y-2">
+                    <Label>Live preview</Label>
+                    <div className="overflow-hidden rounded-xl border border-border" data-profile-custom-css>
+                      {profileCssValidation.valid && profileCssValidation.scopedCss ? (
+                        <style>{profileCssValidation.scopedCss}</style>
+                      ) : null}
+                      <div className="profile-cover h-20 bg-gradient-to-r from-indigo-500/30 via-primary/20 to-cyan-500/30" />
+                      <div className="space-y-1.5 p-4">
+                        <p className="profile-display-name text-lg font-bold">Your profile</p>
+                        <p className="profile-bio text-sm text-muted-foreground">A small preview of how your profile styles will look.</p>
+                      </div>
+                    </div>
+                    <p className="text-xs text-muted-foreground">The preview uses common profile elements. Your saved stylesheet is applied to your full profile.</p>
                   </div>
                 </>
               ) : (
