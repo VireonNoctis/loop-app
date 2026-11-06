@@ -84,6 +84,8 @@ const DEFAULT_FILES = [
   // Discord-style community comments: emoji reactions on replies, stored on
   // the comment row so a thread load needs no extra query.
   "scripts/community-comment-reactions.sql",
+  // LOOP Pro profile styling.
+  "scripts/profile-custom-css-schema.sql",
 ]
 
 // Allow a targeted run: node apply-pending-schema.mjs scripts/foo.sql …
