@@ -17,7 +17,8 @@ import { Badge } from "@/components/ui/badge"
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
 import { useAuth } from "@/hooks/use-auth"
 import { useToast } from "@/hooks/use-toast"
-import { PRO_PRICING } from "@/lib/pro-features"
+import { isProUser, PRO_PRICING } from "@/lib/pro-features"
+import { PROFILE_CUSTOM_CSS_MAX_LENGTH, validateProfileCustomCss } from "@/lib/profile-custom-css"
 import { uploadMediaFile } from "@/lib/client-media-upload"
 import { ensureServiceWorker, subscribeToPush, subscriptionToJSON, unsubscribeFromPush } from "@/lib/push-client"
 import {
@@ -47,6 +48,8 @@ import {
   Accessibility,
   UserCog,
   BadgeCheck,
+  Code2,
+  Lock,
 } from "lucide-react"
 import { OrganizationSettings } from "@/components/settings/organization-settings"
 import { ReferralsSettings } from "@/components/settings/referrals-settings"
@@ -99,6 +102,7 @@ export function EnhancedSettings() {
     website: "",
     location: "",
     pronouns: "",
+    profile_custom_css: "",
     privacy: {
       profile_visibility: "public",
       show_email: false,
@@ -123,6 +127,7 @@ export function EnhancedSettings() {
       },
     },
   })
+  const profileCssValidation = validateProfileCustomCss(formData.profile_custom_css)
   const [taggedCircles, setTaggedCircles] = useState<TaggedCircle[]>([])
   const [joinedCircles, setJoinedCircles] = useState<TaggedCircle[]>([])
   const [loadingCircles, setLoadingCircles] = useState(false)
@@ -221,6 +226,7 @@ export function EnhancedSettings() {
       website: user.website || "",
       location: user.location || "",
       pronouns: (user as any).pronouns || "",
+      profile_custom_css: user.profile_custom_css || "",
       privacy: {
         profile_visibility: privacy.profile_visibility || "public",
         show_email: Boolean(privacy.show_email),
@@ -325,6 +331,15 @@ export function EnhancedSettings() {
 
   const saveSettings = async () => {
     if (!user) return
+    if (isProUser(user) && !profileCssValidation.valid) {
+      toast({
+        title: "Custom CSS needs a fix",
+        description: profileCssValidation.error,
+        variant: "destructive",
+      })
+      setTab("profile")
+      return
+    }
     setLoading(true)
     try {
       const response = await fetch("/api/users/update-profile", {
@@ -340,6 +355,7 @@ export function EnhancedSettings() {
           website: formData.website,
           location: formData.location,
           pronouns: formData.pronouns,
+          profile_custom_css: isProUser(user) ? profileCssValidation.value : undefined,
           tagged_circles: taggedCircles,
           privacy_settings: {
             profile_visibility: formData.privacy.profile_visibility,
@@ -840,6 +856,82 @@ export function EnhancedSettings() {
                   )}
                 </div>
               </div>
+            </CardContent>
+          </Card>
+          <Card>
+            <CardHeader>
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div className="space-y-1">
+                  <CardTitle className="flex items-center gap-2">
+                    <Code2 className="h-4 w-4 text-primary" />
+                    Custom profile CSS
+                  </CardTitle>
+                  <CardDescription>
+                    Fine-tune the look of your profile with your own CSS. Changes only affect your profile page.
+                  </CardDescription>
+                </div>
+                {isProUser(user) ? (
+                  <Badge variant="secondary">LOOP Pro</Badge>
+                ) : (
+                  <Badge variant="outline" className="gap-1.5">
+                    <Lock className="h-3 w-3" /> Pro only
+                  </Badge>
+                )}
+              </div>
+            </CardHeader>
+            <CardContent className="space-y-3">
+              {isProUser(user) ? (
+                <>
+                  <div className="space-y-2">
+                    <Label htmlFor="profile_custom_css">Stylesheet</Label>
+                    <Textarea
+                      id="profile_custom_css"
+                      value={formData.profile_custom_css}
+                      maxLength={PROFILE_CUSTOM_CSS_MAX_LENGTH}
+                      spellCheck={false}
+                      autoCapitalize="off"
+                      autoComplete="off"
+                      onChange={(event) =>
+                        setFormData((prev) => ({ ...prev, profile_custom_css: event.target.value }))
+                      }
+                      className="min-h-[240px] resize-y font-mono text-xs leading-relaxed"
+                      placeholder={".profile-name {\n  color: #a78bfa;\n  text-shadow: 0 0 14px rgba(167, 139, 250, .35);\n}\n\n.profile-card {\n  border-radius: 20px;\n  border-color: #a78bfa;\n}"}
+                    />
+                    <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
+                      <span className="text-muted-foreground">
+                        Rules are automatically scoped to your profile.
+                      </span>
+                      <span className={formData.profile_custom_css.length > PROFILE_CUSTOM_CSS_MAX_LENGTH ? "text-destructive" : "text-muted-foreground"}>
+                        {formData.profile_custom_css.length.toLocaleString()}/{PROFILE_CUSTOM_CSS_MAX_LENGTH.toLocaleString()}
+                      </span>
+                    </div>
+                    {!profileCssValidation.valid && (
+                      <p role="alert" className="text-xs text-destructive">
+                        {profileCssValidation.error}
+                      </p>
+                    )}
+                  </div>
+                  <div className="rounded-xl border border-border bg-muted/30 p-3 text-xs text-muted-foreground">
+                    Allowed: colours, backgrounds, typography, borders, shadows, spacing and gradients.
+                    At-rules, scripts, remote assets and page-wide selectors are blocked.
+                  </div>
+                </>
+              ) : (
+                <div className="flex flex-col items-start gap-3 rounded-xl border border-border bg-muted/30 p-4 sm:flex-row sm:items-center sm:justify-between">
+                  <div className="space-y-1">
+                    <p className="text-sm font-semibold">Make your profile your own</p>
+                    <p className="text-sm text-muted-foreground">
+                      Custom CSS is included with LOOP Pro from {PRO_PRICING.monthly.priceLabel}{PRO_PRICING.monthly.period}.
+                      Your stylesheet is kept while your membership is inactive and resumes when Pro is active again.
+                    </p>
+                  </div>
+                  <Button asChild className="shrink-0 rounded-full">
+                    <Link href="/premium">
+                      <Crown className="mr-2 h-4 w-4" /> Get LOOP Pro
+                    </Link>
+                  </Button>
+                </div>
+              )}
             </CardContent>
           </Card>
         </TabsContent>
