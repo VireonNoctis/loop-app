@@ -24,6 +24,7 @@ interface User {
   banner_url?: string
   video_cover_url?: string | null
   bio?: string
+  profile_custom_css?: string | null
   tagged_circles?: Array<{ id: string; name: string; avatar_url?: string | null }>
   loop_coins: number
   is_premium: boolean
@@ -505,6 +506,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       const nextBanner = (profile.banner_url as string | undefined) ?? prev.banner_url
       const nextVideoCover = (profile.video_cover_url as string | null | undefined) ?? prev.video_cover_url ?? null
       const nextBio = (profile.bio as string | undefined) ?? prev.bio
+      const nextProfileCustomCss =
+        profile.profile_custom_css !== undefined
+          ? (profile.profile_custom_css as string | null)
+          : prev.profile_custom_css
       const nextTagged =
         profile.tagged_circles !== undefined
           ? (Array.isArray(profile.tagged_circles) ? profile.tagged_circles : [])
@@ -542,6 +547,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         nextAvatar === prev.avatar_url &&
         nextBanner === prev.banner_url &&
         nextBio === prev.bio &&
+        nextProfileCustomCss === prev.profile_custom_css &&
         nextTagged === prev.tagged_circles &&
         nextCoins === prev.loop_coins &&
         nextPremium === prev.is_premium &&
@@ -567,6 +573,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         banner_url: nextBanner,
         video_cover_url: nextVideoCover,
         bio: nextBio,
+        profile_custom_css: nextProfileCustomCss,
         tagged_circles: nextTagged,
         loop_coins: nextCoins,
         is_premium: nextPremium,
