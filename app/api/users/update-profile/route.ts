@@ -4,6 +4,7 @@ import { ECONOMY_DEFAULTS } from "@/lib/economy"
 import { sanitizeTaggedCircles } from "@/lib/circle-limits"
 import { getUserFromRequest } from "@/lib/server-auth"
 import { isProUser } from "@/lib/pro-features"
+import { validateProfileCustomCss } from "@/lib/profile-custom-css"
 
 const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL || "https://placeholder.supabase.co",
@@ -46,6 +47,8 @@ export async function POST(request: NextRequest) {
     }
 
     const body = await request.json()
+    const hasCustomProfileCss = Object.prototype.hasOwnProperty.call(body, "profile_custom_css")
+    let validatedProfileCustomCss: string | undefined
 
     // Animated GIF avatars/covers are a Pro-only perk. Enforce server-side so
     // non-Pro users can't set (or keep) a GIF by calling the API directly.
@@ -55,6 +58,21 @@ export async function POST(request: NextRequest) {
       .eq("id", user.id)
       .maybeSingle()
     const viewerIsPro = isProUser(profileRow as any)
+
+    if (hasCustomProfileCss) {
+      const cssResult = validateProfileCustomCss(body.profile_custom_css)
+      if (!cssResult.valid) {
+        return NextResponse.json({ error: cssResult.error || "Custom CSS is invalid." }, { status: 400 })
+      }
+      if (cssResult.value && !viewerIsPro) {
+        return NextResponse.json(
+          { error: "Custom profile CSS is a LOOP Pro feature. Upgrade to Pro to save a stylesheet.", pro_required: true },
+          { status: 403 },
+        )
+      }
+      validatedProfileCustomCss = cssResult.value
+    }
+
     const looksLikeGif = (url?: unknown) =>
       typeof url === "string" && /\.gif(\?|#|$)/i.test(url.trim())
     const avatarIsGif = looksLikeGif(body.avatar_url)
@@ -213,6 +231,7 @@ export async function POST(request: NextRequest) {
         pronouns === undefined
           ? undefined
           : String(pronouns).trim().toLowerCase().slice(0, 60) || null,
+      profile_custom_css: hasCustomProfileCss ? validatedProfileCustomCss : undefined,
       privacy_settings,
       notification_settings,
       tagged_circles: sanitizedTags,
