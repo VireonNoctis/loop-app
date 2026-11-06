@@ -100,6 +100,15 @@ export const PRO_FEATURES = [
     enforced: true,
   },
   {
+    id: "custom_profile_css",
+    title: "Custom Profile CSS",
+    description: "Write your own profile styles with a scoped CSS editor and live profile rendering",
+    free: "Standard profile styling",
+    pro: "Custom profile CSS",
+    icon: "code",
+    enforced: true,
+  },
+  {
     id: "gif_avatar",
     title: "Animated GIF Avatar & Banner",
     description: "Stand out with dynamic animated profile pictures & covers",
